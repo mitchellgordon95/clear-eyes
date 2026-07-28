@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Clear Eyes — AI feed filter for X",
   "version": "0.1.0",
-  "description": "Runs every tweet through Claude before it renders. Keeps intellectual value, hides slop, rage bait, and drama. Bring your own Anthropic API key.",
+  "description": "Filters your X feed with Claude before it renders. Keeps substance; hides slop, rage bait, and drama. Bring your own API key.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
