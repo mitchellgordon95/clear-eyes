@@ -6,6 +6,8 @@
   const TWEET_SELECTOR = 'article[data-testid="tweet"]';
   const BATCH_MAX = 20;
   const BATCH_DEBOUNCE_MS = 400;
+  const MAX_ATTEMPTS = 3;
+  const RETRY_DELAY_MS = 4000;
   const SWEEP_INTERVAL_MS = 1500;
   const HEALTH_CHECK_AFTER_MS = 12000;
 
@@ -15,6 +17,7 @@
   let flushTimer = null;
   let everSawTweet = false;
   const verdictCache = new Map(); // id -> category (page-lifetime memo)
+  const retryCounts = new Map(); // id -> failed classification attempts
   let categoryInfo = {}; // id -> {label, action}
 
   init();
@@ -165,33 +168,61 @@
     try {
       chrome.runtime.sendMessage({ type: "CLASSIFY_BATCH", tweets: batch }, (resp) => {
         responded = true;
-        if (chrome.runtime.lastError || !resp || resp.error || resp.disabled) {
+        if (chrome.runtime.lastError || !resp || resp.error) {
           if (resp && resp.error) console.warn("[clear-eyes]", resp.error);
-          revealBatch(batch);
+          failBatch(batch);
+          return;
+        }
+        if (resp.disabled) {
+          for (const t of batch) for (const a of findArticles(t.id)) unveil(a);
           return;
         }
         if (resp.categories) categoryInfo = Object.assign(categoryInfo, resp.categories);
         for (const t of batch) {
           const category = resp.verdicts[t.id];
-          if (category) verdictCache.set(t.id, category);
+          if (category) {
+            verdictCache.set(t.id, category);
+            retryCounts.delete(t.id);
+          }
           applyVerdictById(t.id, category);
         }
       });
     } catch (_) {
-      revealBatch(batch);
+      failBatch(batch);
     }
-    // Safety valve: if the worker never answers, unveil after 20s.
+    // Safety valve: if the worker never answers, treat as a failed attempt.
     setTimeout(() => {
-      if (!responded) revealBatch(batch);
+      if (!responded) failBatch(batch);
     }, 20000);
   }
 
-  function revealBatch(batch) {
+  // A batch failed to classify: unveil immediately (fail open), retry quietly
+  // in the background, and only mark tweets "not classified" once retries
+  // are exhausted.
+  function failBatch(batch) {
+    const toRetry = [];
     for (const t of batch) {
-      for (const article of findArticles(t.id)) {
-        unveil(article);
-        setLabel(article, "not classified", "error");
+      if (verdictCache.has(t.id)) continue; // a retry already succeeded
+      const attempts = (retryCounts.get(t.id) || 0) + 1;
+      retryCounts.set(t.id, attempts);
+      for (const article of findArticles(t.id)) unveil(article);
+      if (attempts < MAX_ATTEMPTS) {
+        toRetry.push(t);
+      } else {
+        for (const article of findArticles(t.id)) {
+          setLabel(article, "not classified", "error");
+        }
       }
+    }
+    if (toRetry.length > 0) {
+      setTimeout(() => {
+        for (const t of toRetry) {
+          if (verdictCache.has(t.id) || queuedIds.has(t.id)) continue;
+          queuedIds.add(t.id);
+          queue.push(t);
+        }
+        if (queue.length > 0) flush();
+      }, RETRY_DELAY_MS * (retryCounts.get(toRetry[0].id) || 1));
     }
   }
 
