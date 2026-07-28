@@ -165,9 +165,13 @@
     }
 
     const text = extractText(article);
-    if (!text && config.skipNoText) {
-      markKept(article);
-      setLabel(article, "no text", "skip");
+    if (!text) {
+      if ((config.noTextAction || "hide") === "hide") {
+        hideTweet(article, id, "notext", "no text");
+      } else {
+        markKept(article);
+        setLabel(article, "no text", "skip");
+      }
       return;
     }
 

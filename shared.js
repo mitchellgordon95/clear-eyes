@@ -50,7 +50,7 @@ const CE_DEFAULT_CONFIG = {
   apiKey: "",
   model: "claude-haiku-4-5",
   homeOnly: true, // only filter the Home timeline (/home); profiles, search, threads untouched
-  skipNoText: true, // pure media tweets (no text) pass through unclassified
+  noTextAction: "hide", // media-only tweets (no text): "hide" or "keep" — nothing to classify either way
   showLabels: true, // show the category pill on kept tweets
   hideAds: true, // hide promoted tweets (detected locally, no API call)
   categories: CE_DEFAULT_CATEGORIES

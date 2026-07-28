@@ -10,7 +10,7 @@ async function init() {
   $("model").value = cfg.model;
   $("enabled").checked = cfg.enabled;
   $("homeOnly").checked = cfg.homeOnly;
-  $("skipNoText").checked = cfg.skipNoText;
+  $("hideNoText").checked = (cfg.noTextAction || "hide") === "hide";
   $("showLabels").checked = cfg.showLabels !== false;
   $("hideAds").checked = cfg.hideAds !== false;
   categories = JSON.parse(JSON.stringify(cfg.categories));
@@ -115,7 +115,8 @@ async function save() {
   cfg.model = $("model").value.trim() || "claude-haiku-4-5";
   cfg.enabled = $("enabled").checked;
   cfg.homeOnly = $("homeOnly").checked;
-  cfg.skipNoText = $("skipNoText").checked;
+  cfg.noTextAction = $("hideNoText").checked ? "hide" : "keep";
+  delete cfg.skipNoText;
   cfg.showLabels = $("showLabels").checked;
   cfg.hideAds = $("hideAds").checked;
   cfg.categories = cleaned;

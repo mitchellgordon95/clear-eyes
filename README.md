@@ -30,7 +30,7 @@ Everything is in the options page:
   - keep: intellectual value, personal growth, news/announcements
   - hide: slop/engagement bait, rage bait, drama
 - **Home only** (default on) — filter just `/home`; profiles, search, and threads stay untouched.
-- **Media-only tweets** (default: pass through) — tweets with no text aren't classified.
+- **Media-only tweets** (default: hidden) — tweets with no text can't be classified, so they collapse behind a "no text" bar; flip the toggle to let them through instead.
 - **Category pills** (default on) — every classified tweet gets a small pill in its header row showing the verdict ("Intellectual value", "no text", "not classified", …), so you can audit the classifier at a glance. Turn it off once you trust it.
 - **Hide ads** (default on) — promoted tweets are detected straight from the DOM ("Ad"/"Promoted" marker, English UI) and collapsed instantly, no API call spent.
 
