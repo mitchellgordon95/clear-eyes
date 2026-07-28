@@ -33,5 +33,12 @@ function refresh() {
     $("apiCalls").textContent = resp.stats.apiCalls;
     $("noKey").style.display = resp.config.apiKey ? "none" : "block";
     $("healthWarn").style.display = resp.selectorHealth && resp.selectorHealth.ok === false ? "block" : "none";
+    if (resp.lastError && resp.lastError.message) {
+      const mins = Math.round((Date.now() - resp.lastError.at) / 60000);
+      $("lastError").textContent = `Last API error (${mins}m ago): ${resp.lastError.message}`;
+      $("lastError").style.display = "block";
+    } else {
+      $("lastError").style.display = "none";
+    }
   });
 }

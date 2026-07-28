@@ -11,6 +11,7 @@ async function init() {
   $("enabled").checked = cfg.enabled;
   $("homeOnly").checked = cfg.homeOnly;
   $("skipNoText").checked = cfg.skipNoText;
+  $("showLabels").checked = cfg.showLabels !== false;
   categories = JSON.parse(JSON.stringify(cfg.categories));
   renderCats();
 
@@ -107,6 +108,7 @@ async function save() {
   cfg.enabled = $("enabled").checked;
   cfg.homeOnly = $("homeOnly").checked;
   cfg.skipNoText = $("skipNoText").checked;
+  cfg.showLabels = $("showLabels").checked;
   cfg.categories = cleaned;
   await ceSaveConfig(cfg);
   categories = cleaned;

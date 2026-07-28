@@ -29,6 +29,9 @@
         config = Object.assign({}, config, changes.config.newValue || {});
         buildLocalCategoryInfo();
         if (!config.enabled) revealEverything();
+        if (config.showLabels === false) {
+          for (const article of document.querySelectorAll(TWEET_SELECTOR)) clearLabel(article);
+        }
       }
     });
 
@@ -128,6 +131,7 @@
     const text = extractText(article);
     if (!text && config.skipNoText) {
       markKept(article);
+      setLabel(article, "no text", "skip");
       return;
     }
 
@@ -181,7 +185,10 @@
 
   function revealBatch(batch) {
     for (const t of batch) {
-      for (const article of findArticles(t.id)) unveil(article);
+      for (const article of findArticles(t.id)) {
+        unveil(article);
+        setLabel(article, "not classified", "error");
+      }
     }
   }
 
@@ -195,8 +202,14 @@
 
   function applyVerdict(article, id, category) {
     const info = categoryInfo[category];
-    if (!category || !info || info.action !== "hide") {
+    if (!category || !info) {
       markKept(article);
+      setLabel(article, "not classified", "error");
+      return;
+    }
+    if (info.action !== "hide") {
+      markKept(article);
+      setLabel(article, info.label || category, "keep");
       return;
     }
     hideTweet(article, id, category, info.label);
@@ -204,6 +217,17 @@
 
   // -------------------------------------------------------------------------
   // DOM manipulation
+
+  function setLabel(article, text, kind) {
+    if (config.showLabels === false) return;
+    article.dataset.ceLabel = text;
+    article.dataset.ceKind = kind;
+  }
+
+  function clearLabel(article) {
+    delete article.dataset.ceLabel;
+    delete article.dataset.ceKind;
+  }
 
   function veil(article) {
     article.classList.add("ce-veiled");
@@ -224,7 +248,11 @@
     article.classList.add("ce-hidden");
 
     const cell = article.closest('[data-testid="cellInnerDiv"]') || article.parentElement;
-    if (!cell || cell.querySelector(":scope > .ce-bar")) return;
+    if (!cell) return;
+    // Always rebuild the bar: X recycles DOM nodes, and a leftover bar from a
+    // previous tweet would carry a stale label and a dead click handler.
+    const stale = cell.querySelector(":scope > .ce-bar");
+    if (stale) stale.remove();
 
     const bar = document.createElement("div");
     bar.className = "ce-bar";
@@ -253,6 +281,7 @@
   function resetArticle(article) {
     delete article.dataset.ceId;
     delete article.dataset.ceRevealed;
+    clearLabel(article);
     article.classList.remove("ce-veiled", "ce-hidden");
     removeBar(article);
   }
@@ -260,6 +289,7 @@
   function revealEverything() {
     for (const article of document.querySelectorAll(TWEET_SELECTOR)) {
       article.classList.remove("ce-veiled", "ce-hidden");
+      clearLabel(article);
       removeBar(article);
     }
     for (const bar of document.querySelectorAll(".ce-bar")) bar.remove();
