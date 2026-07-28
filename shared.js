@@ -60,6 +60,7 @@ const CE_DEFAULT_CONFIG = {
   homeOnly: true, // only filter the Home timeline (/home); profiles, search, threads untouched
   skipNoText: true, // pure media tweets (no text) pass through unclassified
   showLabels: true, // show the category pill on kept tweets
+  hideAds: true, // hide promoted tweets (detected locally, no API call)
   categories: CE_DEFAULT_CATEGORIES
 };
 

@@ -92,7 +92,14 @@
 
     for (const article of articles) {
       const id = extractTweetId(article);
-      if (!id) continue;
+      if (!id) {
+        // Promoted tweets sometimes lack a status link; still catch them.
+        if (config.hideAds !== false && !article.dataset.ceAdChecked) {
+          article.dataset.ceAdChecked = "1";
+          if (isAd(article)) hideTweet(article, null, "ad", "Ad");
+        }
+        continue;
+      }
 
       // X virtualizes the timeline and can recycle DOM nodes: if the node's
       // recorded id no longer matches its content, reset and reprocess.
@@ -127,7 +134,30 @@
     return link.getAttribute("href").replace(/^\//, "").split("/")[0];
   }
 
+  // Promoted-tweet detection: X wraps ads in placementTracking and/or shows a
+  // bare "Ad" / "Promoted" span in the header. Locale-dependent (English).
+  function isAd(article) {
+    if (article.closest('[data-testid="placementTracking"]') ||
+        article.querySelector('[data-testid="placementTracking"]')) {
+      return true;
+    }
+    for (const span of article.querySelectorAll("span")) {
+      if (span.children.length > 0) continue;
+      const t = span.textContent.trim();
+      if (t !== "Ad" && t !== "Promoted") continue;
+      if (span.closest('[data-testid="tweetText"]')) continue; // tweet body, not the marker
+      return true;
+    }
+    return false;
+  }
+
   function processTweet(article, id) {
+    // Ads: detected from the DOM, hidden instantly, never sent to the API.
+    if (config.hideAds !== false && isAd(article)) {
+      hideTweet(article, id, "ad", "Ad");
+      return;
+    }
+
     // Known verdict (scrolled past before) — apply instantly, no veil flash.
     if (verdictCache.has(id)) {
       applyVerdict(article, id, verdictCache.get(id));
@@ -345,6 +375,7 @@
   function resetArticle(article) {
     delete article.dataset.ceId;
     delete article.dataset.ceRevealed;
+    delete article.dataset.ceAdChecked;
     clearLabel(article);
     article.classList.remove("ce-veiled", "ce-hidden");
     removeBar(article);
