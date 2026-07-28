@@ -20,6 +20,13 @@ async function init() {
     categories.push({ id: "", label: "", description: "", action: "hide" });
     renderCats();
   });
+  $("resetCats").addEventListener("click", () => {
+    categories = JSON.parse(JSON.stringify(CE_DEFAULT_CATEGORIES));
+    renderCats();
+    const st = $("saveStatus");
+    st.textContent = "Defaults restored — click Save to apply.";
+    st.className = "";
+  });
   $("save").addEventListener("click", save);
   $("testKey").addEventListener("click", testKey);
 }

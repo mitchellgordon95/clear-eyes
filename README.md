@@ -27,7 +27,7 @@ Everything is in the options page:
 
 - **Model** — defaults to `claude-haiku-4-5` (fastest/cheapest, plenty for this). Swap in `claude-sonnet-5` if you want sharper judgment.
 - **Categories** — fully editable. Each category is `{id, label, description, keep|hide}` and the descriptions *are* the prompt. Defaults:
-  - keep: intellectual value, personal growth, news/announcements, benign/personal
+  - keep: intellectual value, personal growth, news/announcements
   - hide: slop/engagement bait, rage bait, drama
 - **Home only** (default on) — filter just `/home`; profiles, search, and threads stay untouched.
 - **Media-only tweets** (default: pass through) — tweets with no text aren't classified.

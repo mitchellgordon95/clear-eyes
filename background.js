@@ -107,7 +107,7 @@ function buildSystemPrompt(categories) {
     (c) => `- "${c.id}" (${c.action.toUpperCase()}): ${c.label}. ${c.description}`
   );
   return [
-    "You are a content-quality filter for a social media feed. The user wants a feed with real value — intellectual substance, useful ideas, honest human posts — and wants attention-farming content removed.",
+    "You are a content-quality filter for a social media feed. The user wants a feed with real value — intellectual substance and useful ideas — and wants attention-farming content removed.",
     "",
     "Posts arrive as <post index=\"N\" author=\"...\">text</post> blocks. Classify each post into exactly one category id:",
     "",

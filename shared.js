@@ -19,15 +19,7 @@ const CE_DEFAULT_CATEGORIES = [
   {
     id: "news",
     label: "News / announcements",
-    description:
-      "Factual news, releases, papers, event announcements, or first-hand reporting.",
-    action: "keep"
-  },
-  {
-    id: "neutral",
-    label: "Benign / personal",
-    description:
-      "Ordinary personal updates, honest questions, humor or art without engagement-bait mechanics. Harmless filler that isn't optimized to farm attention.",
+    description: "Factual news, releases, papers, or event announcements.",
     action: "keep"
   },
   {
