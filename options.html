@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Clear Eyes — Options</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 760px;
+      margin: 32px auto;
+      padding: 0 20px;
+      color: #1a1a1a;
+      line-height: 1.45;
+    }
+    h1 { font-size: 22px; }
+    h2 { font-size: 16px; margin-top: 28px; }
+    label { display: block; font-weight: 600; margin: 14px 0 4px; }
+    input[type="text"], input[type="password"], textarea, select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 7px 9px;
+      font-size: 14px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-family: inherit;
+    }
+    .hint { font-size: 12px; color: #666; margin-top: 3px; }
+    .row { display: flex; gap: 10px; align-items: center; }
+    .row input[type="checkbox"] { width: auto; }
+    .cat {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      display: grid;
+      grid-template-columns: 150px 1fr 90px 60px;
+      gap: 8px;
+      align-items: start;
+    }
+    .cat textarea { resize: vertical; min-height: 44px; font-size: 13px; }
+    .cat .del {
+      background: none; border: none; color: #b00; cursor: pointer; font-size: 13px;
+      padding-top: 8px;
+    }
+    button.primary {
+      background: #1d9bf0; color: white; border: none; border-radius: 999px;
+      padding: 8px 22px; font-size: 14px; font-weight: 600; cursor: pointer;
+      margin-top: 20px;
+    }
+    button.secondary {
+      background: none; border: 1px solid #aaa; border-radius: 999px;
+      padding: 6px 16px; font-size: 13px; cursor: pointer;
+    }
+    #status { margin-left: 12px; font-size: 13px; }
+    .ok { color: #1a7f37; }
+    .bad { color: #b00; }
+  </style>
+</head>
+<body>
+  <h1>Clear Eyes</h1>
+  <p>Every tweet on your Home timeline is classified by Claude before it renders. Categories marked <b>hide</b> collapse into a one-line placeholder you can reopen.</p>
+
+  <h2>API</h2>
+  <label for="apiKey">Anthropic API key</label>
+  <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off" />
+  <div class="hint">Stored in extension local storage on this machine only, and sent only to api.anthropic.com. Get a key at console.anthropic.com. Consider a dedicated key with a spend limit.</div>
+
+  <label for="model">Model</label>
+  <input type="text" id="model" list="models" />
+  <datalist id="models">
+    <option value="claude-haiku-4-5">fast + cheapest — recommended</option>
+    <option value="claude-sonnet-5">smarter, ~3x cost</option>
+  </datalist>
+  <div class="hint">claude-haiku-4-5 is plenty for this. Any Anthropic model ID works.</div>
+
+  <div class="row" style="margin-top:14px">
+    <button class="secondary" id="testKey">Test key</button>
+    <span id="status"></span>
+  </div>
+
+  <h2>Behavior</h2>
+  <div class="row"><input type="checkbox" id="enabled" /><label for="enabled" style="margin:0">Enabled</label></div>
+  <div class="row"><input type="checkbox" id="homeOnly" /><label for="homeOnly" style="margin:0">Filter only the Home timeline (leave profiles, search, and threads alone)</label></div>
+  <div class="row"><input type="checkbox" id="skipNoText" /><label for="skipNoText" style="margin:0">Let media-only tweets (no text) through without classifying</label></div>
+
+  <h2>Categories</h2>
+  <p class="hint">The model must place every tweet into exactly one category. Keep = shown, Hide = collapsed. Edit descriptions freely — they are the prompt.</p>
+  <div id="cats"></div>
+  <button class="secondary" id="addCat">+ Add category</button>
+
+  <div>
+    <button class="primary" id="save">Save</button>
+    <span id="saveStatus"></span>
+  </div>
+
+  <script src="shared.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

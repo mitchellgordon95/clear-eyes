@@ -1,0 +1,41 @@
+/* Pending classification: tweet is present but veiled so slop never flashes. */
+article[data-testid="tweet"].ce-veiled {
+  filter: blur(7px) saturate(0.6);
+  opacity: 0.45;
+  pointer-events: none;
+  transition: filter 0.15s ease, opacity 0.15s ease;
+}
+
+/* Verdict: hide. Collapse the tweet body; the .ce-bar placeholder remains. */
+article[data-testid="tweet"].ce-hidden {
+  display: none;
+}
+
+.ce-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #71767b;
+  border-bottom: 1px solid rgba(113, 118, 123, 0.2);
+}
+
+.ce-bar-label {
+  opacity: 0.85;
+}
+
+.ce-bar-show {
+  background: none;
+  border: 1px solid rgba(113, 118, 123, 0.4);
+  border-radius: 999px;
+  color: inherit;
+  font-size: 12px;
+  padding: 1px 10px;
+  cursor: pointer;
+}
+
+.ce-bar-show:hover {
+  background: rgba(113, 118, 123, 0.15);
+}
