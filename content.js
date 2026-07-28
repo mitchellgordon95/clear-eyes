@@ -96,7 +96,10 @@
       if (article.dataset.ceId && article.dataset.ceId !== id) {
         resetArticle(article);
       }
-      if (article.dataset.ceId === id) continue; // already handled
+      if (article.dataset.ceId === id) {
+        ensurePill(article); // re-add if a React re-render dropped it
+        continue;
+      }
 
       article.dataset.ceId = id;
       processTweet(article, id);
@@ -222,11 +225,41 @@
     if (config.showLabels === false) return;
     article.dataset.ceLabel = text;
     article.dataset.ceKind = kind;
+    insertPill(article);
+  }
+
+  function insertPill(article) {
+    const old = article.querySelector(".ce-pill");
+    if (old) old.remove();
+    delete article.dataset.cePillFallback;
+
+    // Anchor next to the tweet's top-right controls (Grok button + "..." menu):
+    // insert just before the caret button so the pill sits beside them.
+    const caret = article.querySelector('[data-testid="caret"]');
+    if (!caret || !caret.parentNode) {
+      article.dataset.cePillFallback = "1"; // CSS pseudo-element fallback
+      return;
+    }
+    const pill = document.createElement("span");
+    pill.className = "ce-pill";
+    pill.dataset.kind = article.dataset.ceKind || "keep";
+    pill.textContent = article.dataset.ceLabel || "";
+    caret.parentNode.insertBefore(pill, caret);
+  }
+
+  // X's React re-renders can silently drop our injected pill; re-add it.
+  function ensurePill(article) {
+    if (config.showLabels === false) return;
+    if (!article.dataset.ceLabel || article.dataset.cePillFallback) return;
+    if (!article.querySelector(".ce-pill")) insertPill(article);
   }
 
   function clearLabel(article) {
     delete article.dataset.ceLabel;
     delete article.dataset.ceKind;
+    delete article.dataset.cePillFallback;
+    const pill = article.querySelector(".ce-pill");
+    if (pill) pill.remove();
   }
 
   function veil(article) {
