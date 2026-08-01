@@ -27,6 +27,10 @@ async function handleMessage(msg) {
       return testKey(msg.apiKey, msg.model);
     case "SELECTOR_HEALTH":
       return reportHealth(msg.ok);
+    case "REPAIR_PROPOSE":
+      return proposeSelectors(msg.html, msg.previous, msg.feedback);
+    case "SAVE_SELECTORS":
+      return saveSelectors(msg.selectors);
     case "GET_STATUS":
       return getStatus();
     case "RESET_STATS":
@@ -239,6 +243,90 @@ async function testKey(apiKey, model) {
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Selector self-repair: when X.com's markup changes, ask the latest Opus to
+// derive new selectors from a pruned HTML sample of the timeline. The content
+// script verifies candidates against the live DOM before they are saved.
+
+const SELECTOR_KEYS = ["tweet", "tweetText", "userName", "cell", "caret", "statusLink"];
+
+async function proposeSelectors(html, previous, feedback) {
+  const config = await ceGetConfig();
+  if (!config.apiKey) return { error: "No API key configured." };
+
+  const schema = {
+    type: "object",
+    properties: Object.fromEntries(SELECTOR_KEYS.map((k) => [k, { type: "string" }])),
+    required: SELECTOR_KEYS,
+    additionalProperties: false
+  };
+
+  const system =
+    "You repair CSS selectors for a browser extension that filters posts on X.com (Twitter). " +
+    "The site's DOM changed and the current selectors no longer match. From the provided HTML sample of the timeline, derive working CSS selectors.\n\n" +
+    "Required selectors:\n" +
+    "- tweet: matches each post's container element, exactly one match per visible post\n" +
+    "- tweetText: within a tweet container, the element holding the post's body text\n" +
+    "- userName: within a tweet, an anchor linking to the author's profile (href like \"/handle\")\n" +
+    "- cell: the list-cell ancestor that wraps each tweet (used to insert placeholder bars); may be the tweet's parent\n" +
+    "- caret: within a tweet, the 'more options' menu button in the post header\n" +
+    "- statusLink: within a tweet, an anchor whose href contains \"/status/<numeric id>\"\n\n" +
+    "Prefer stable attributes (data-testid, role, aria-label, href patterns) over generated class names, which change every deploy. " +
+    "The sample has had svg contents, style/class attributes, and long text removed — do not rely on anything that was stripped.";
+
+  const user =
+    "Current selectors (no longer working):\n" +
+    JSON.stringify(previous, null, 2) +
+    (feedback ? "\n\nA previous repair attempt failed live-DOM verification with these results (matched counts): " + feedback : "") +
+    "\n\nHTML sample of the timeline:\n" +
+    html;
+
+  const resp = await fetch(API_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": config.apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify({
+      model: config.repairModel || "claude-opus-5",
+      max_tokens: 16000,
+      system,
+      messages: [{ role: "user", content: user }],
+      output_config: { format: { type: "json_schema", schema } }
+    })
+  });
+
+  if (!resp.ok) {
+    let detail = resp.status + " " + resp.statusText;
+    try {
+      const err = await resp.json();
+      if (err && err.error && err.error.message) detail = err.error.message;
+    } catch (_) {}
+    return { error: "Anthropic API error: " + detail };
+  }
+
+  const data = await resp.json();
+  if (data.stop_reason === "refusal") return { error: "model refused the request" };
+  const textBlock = (data.content || []).find((b) => b.type === "text");
+  if (!textBlock) return { error: "no text block in response" };
+  try {
+    return { selectors: JSON.parse(textBlock.text) };
+  } catch (_) {
+    return { error: "could not parse model output" };
+  }
+}
+
+async function saveSelectors(selectors) {
+  const config = await ceGetConfig();
+  config.selectors = Object.assign({}, config.selectors, selectors);
+  await ceSaveConfig(config);
+  await reportHealth(true);
+  await setBadge("", "");
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------

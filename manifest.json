@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Clear Eyes — AI feed filter for X",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Filters your X feed with Claude before it renders. Keeps substance; hides slop, rage bait, and drama. Bring your own API key.",
   "icons": {
     "16": "icons/icon16.png",

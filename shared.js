@@ -45,6 +45,17 @@ const CE_DEFAULT_CATEGORIES = [
   }
 ];
 
+// CSS selectors for X.com's DOM. These are what the self-repair flow rewrites
+// when X changes their markup.
+const CE_DEFAULT_SELECTORS = {
+  tweet: 'article[data-testid="tweet"]',
+  tweetText: '[data-testid="tweetText"]',
+  userName: '[data-testid="User-Name"] a[href^="/"]',
+  cell: '[data-testid="cellInnerDiv"]',
+  caret: '[data-testid="caret"]',
+  statusLink: 'a[href*="/status/"]'
+};
+
 const CE_DEFAULT_CONFIG = {
   enabled: true,
   apiKey: "",
@@ -53,6 +64,8 @@ const CE_DEFAULT_CONFIG = {
   noTextAction: "hide", // media-only tweets (no text): "hide" or "keep" — nothing to classify either way
   showLabels: true, // show the category pill on kept tweets
   hideAds: true, // hide promoted tweets (detected locally, no API call)
+  repairModel: "claude-opus-5", // latest Opus alias; used only for selector self-repair
+  selectors: CE_DEFAULT_SELECTORS,
   categories: CE_DEFAULT_CATEGORIES
 };
 
@@ -62,6 +75,7 @@ async function ceGetConfig() {
   if (!Array.isArray(cfg.categories) || cfg.categories.length === 0) {
     cfg.categories = CE_DEFAULT_CATEGORIES;
   }
+  cfg.selectors = Object.assign({}, CE_DEFAULT_SELECTORS, cfg.selectors || {});
   return cfg;
 }
 

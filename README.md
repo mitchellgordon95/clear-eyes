@@ -40,9 +40,16 @@ The classifier is instructed: *when uncertain between keep and hide, keep* — h
 
 With `claude-haiku-4-5` ($1 / $5 per MTok): a batch of 20 tweets is roughly 1.5–2.5K input tokens and ~300 output tokens, so about **$0.3–0.5 per 1,000 tweets classified**. A heavy month of scrolling is on the order of a dollar or two.
 
-## "What if X changes their markup?"
+## "What if X changes their markup?" — self-repair
 
-Instead of an hourly cloud job (which can't see your logged-in feed anyway), the extension self-monitors: if the Home timeline clearly rendered content but the tweet selector matched nothing for ~12 seconds, the toolbar badge shows **!** and the popup explains that selectors are stale. Filtering fails open in the meantime — you just see the normal unfiltered feed, never a broken one. Selectors live at the top of `content.js` (`article[data-testid="tweet"]`, `[data-testid="tweetText"]`, etc.).
+The extension self-monitors: if the Home timeline clearly rendered content but the tweet selector matched nothing for ~12 seconds, the toolbar badge shows **!** and a banner appears on the page offering an **automatic repair**. If you accept, the extension:
+
+1. Serializes a pruned sample of the timeline DOM (svg innards, styles, generated class names, image payloads, and long text stripped).
+2. Sends it to the latest Claude Opus (`claude-opus-5`, your key) asking for replacement CSS selectors, with the old selectors and requirements spelled out.
+3. **Verifies the candidates against the live DOM** — tweet selector must match ≥3 posts, status-ID extraction must work on ≥80% of a sample, text extraction on ≥50% — and feeds failures back to Opus for up to 3 attempts.
+4. Only saves selectors that pass verification; they persist in extension storage and take effect immediately.
+
+Filtering fails open the whole time — you see a normal unfiltered feed, never a broken one. Nothing is sent anywhere without you clicking the button. Default selectors live in `shared.js`.
 
 ## Prior art
 
