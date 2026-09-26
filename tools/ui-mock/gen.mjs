@@ -33,7 +33,7 @@ const html = `<!doctype html>
   body { margin: 0; background: #000; color: #e7e9ea; font-family: -apple-system, sans-serif; }
   [data-testid="primaryColumn"] { width: 600px; margin: 0 auto; }
   [data-testid="cellInnerDiv"] { border-bottom: 1px solid #2f3336; }
-  article { padding: 12px 16px; min-height: 120px; }
+  [data-testid="cellInnerDiv"] > article { padding: 12px 16px; min-height: 120px; } /* scoped: the overlay's cards are <article> too */
   .name { font-weight: 700; margin-bottom: 6px; }
   .name a { color: inherit; text-decoration: none; }
   [data-testid="tweetText"] { white-space: pre-wrap; font-size: 15px; line-height: 1.4; }
