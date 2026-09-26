@@ -20,6 +20,8 @@ Every cluster is a **beat**: a subject that keeps coming up, named the way a new
 
 A real "For you" feed has a handful of shared conversations and a long tail of one-offs, so the overlay shows beats with 2+ posts as cards and one-post beats as a compact chip list underneath; a chip becomes a card the moment its second post lands.
 
+**Posting:** the **Post** button in the header (or the `n` key) opens X's own composer. It's X's normal compose modal, an SPA route (`/compose/post`), so drafts, media, polls, and scheduling all work as usual; while it's open the overlay steps aside and the timeline underneath is blurred, and keys and wheel pass through to the composer. Closing it brings the cluster view back.
+
 **Interaction:** click a card to expand it and read the posts inside (author, text, category, and an "open on X" link that opens the post in a new tab); click again to collapse. Clicking a one-off chip promotes it to an expanded card. Posts are served from the worker's session memo, so a cluster can be opened long after X unmounted the tweets. When you scroll to the bottom to pull more posts, the list returns to the top once the last batch has landed.
 
 The default model is `claude-sonnet-5`. Tuned side-by-side on a saved corpus, Haiku 4.5 misfiled posts (it writes category ids into the cluster field, cites clusters by slug) and its consolidation invented umbrellas like "Disputes, agreements, and stakeholder conflicts". Cost on Sonnet is roughly $1.3 per 1,000 posts including consolidation.

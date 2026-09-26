@@ -163,12 +163,28 @@
 
   function viewActive() {
     if (!config || !config.enabled) return false;
-    if (config.homeOnly !== false && location.pathname !== "/home") return false;
+    const p = location.pathname;
+    // /compose/post is X's SPA route for the compose modal over the Home
+    // timeline; the overlay stays up underneath it.
+    if (config.homeOnly !== false && p !== "/home" && !p.startsWith("/compose/")) return false;
     return true;
   }
 
+  // X's compose modal is open: let keys and wheel through to it.
+  function composing() {
+    return location.pathname.startsWith("/compose/");
+  }
+
+  function openCompose() {
+    const a = document.querySelector('[data-testid="SideNav_NewTweet_Button"]');
+    if (a) a.click(); // SPA route change; the modal renders in #layers above the overlay
+    else location.assign("/compose/post");
+  }
+
   function sweep() {
+    if (ui && !ui.root.isConnected) unmount(); // something removed our node; remount below
     syncView(); // X is an SPA: the path can change without a reload
+    syncComposing();
     const articles = document.querySelectorAll(S.tweet);
     if (articles.length > 0) everSawTweet = true;
     if (!viewActive() || ingestPaused) return;
@@ -344,7 +360,7 @@
     else if (!want && ui) unmount();
   }
 
-  const CE_BUILD = "b4"; // bump when content.js changes; shown as data-build on the overlay root
+  const CE_BUILD = "b5"; // bump when content.js changes; shown as data-build on the overlay root
 
   function mount() {
     const root = el("div", "ce-root");
@@ -354,6 +370,9 @@
     const top = el("header", "ce-top");
     const brand = el("div", "ce-brand", "Clear Eyes");
     const stats = el("div", "ce-stats");
+    const post = el("button", "ce-btn ce-btn-primary", "Post");
+    post.title = "Write a post (n)";
+    post.addEventListener("click", openCompose);
     const reset = el("button", "ce-btn", "Reset clusters");
     reset.addEventListener("click", async () => {
       reset.disabled = true;
@@ -366,7 +385,7 @@
       sweep();
       reset.disabled = false;
     });
-    top.append(brand, stats, reset);
+    top.append(brand, stats, post, reset);
 
     const notice = el("div", "ce-notice");
     const list = el("main", "ce-list");
@@ -377,9 +396,8 @@
     const foot = el("footer", "ce-foot", "Scroll to pull more posts from your timeline");
 
     root.append(top, notice, list, foot);
-    // Must live in <body>: X makes <html> the scroller, and a fixed element
-    // attached directly to <html> gets offset by the scroll position.
-    document.body.appendChild(root);
+    ui = { root, stats, notice, list, tail, tailHead, tailList, cards: new Map(), expanded: new Set(), pinned: new Set(), postsCache: new Map() };
+    placeRoot();
     document.documentElement.classList.add("ce-active");
 
     root.addEventListener("wheel", onWheel, { passive: false });
@@ -387,8 +405,26 @@
     window.addEventListener("keyup", swallowKey, true);
     window.addEventListener("keypress", swallowKey, true);
 
-    ui = { root, stats, notice, list, tail, tailHead, tailList, cards: new Map(), expanded: new Set(), pinned: new Set(), postsCache: new Map() };
     render();
+  }
+
+  // The overlay lives in <body> (never <html>: X makes it the scroller and
+  // fixed children get offset by the scroll position; and never inside X's
+  // #layers: it is React-managed and a foreign child there stops the compose
+  // modal from rendering). X's modals therefore can't paint above the overlay,
+  // so while the compose route is open the overlay hides itself and the
+  // timeline underneath is blurred (see syncComposing).
+  function placeRoot() {
+    if (ui.root.parentElement !== document.body) document.body.appendChild(ui.root);
+  }
+
+  let wasComposing = false;
+  function syncComposing() {
+    const c = composing();
+    if (c === wasComposing) return;
+    wasComposing = c;
+    document.documentElement.classList.toggle("ce-composing", c);
+    if (ui) ui.root.style.display = c ? "none" : "";
   }
 
   function unmount() {
@@ -398,7 +434,8 @@
     window.removeEventListener("keyup", swallowKey, true);
     window.removeEventListener("keypress", swallowKey, true);
     ui.root.remove();
-    document.documentElement.classList.remove("ce-active");
+    document.documentElement.classList.remove("ce-active", "ce-composing");
+    wasComposing = false;
     ui = null;
     stopPump();
   }
@@ -420,16 +457,18 @@
   let stallSince = 0;
 
   function onWheel(e) {
+    if (composing()) return;
     e.preventDefault();
     const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * innerHeight : e.deltaY;
     requestScroll(dy);
   }
 
   function onKey(e) {
-    if (!ui) return;
+    if (!ui || composing()) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
-    if (k === "ArrowDown" || k === "j") requestScroll(80);
+    if (k === "n") openCompose();
+    else if (k === "ArrowDown" || k === "j") requestScroll(80);
     else if (k === "ArrowUp" || k === "k") requestScroll(-80);
     else if (k === "PageDown" || k === " ") requestScroll(innerHeight * 0.8);
     else if (k === "PageUp") requestScroll(-innerHeight * 0.8);
@@ -441,7 +480,7 @@
   }
 
   function swallowKey(e) {
-    if (ui) e.stopImmediatePropagation();
+    if (ui && !composing()) e.stopImmediatePropagation();
   }
 
   function listAtBottom() {

@@ -26,6 +26,14 @@ html.ce-active::-webkit-scrollbar {
   display: none;
 }
 
+/* While X's compose modal is open the overlay hides itself (X can't paint a
+   modal above it), and the timeline it was covering is blurred instead. */
+html.ce-composing [data-testid="primaryColumn"],
+html.ce-composing [data-testid="sidebarColumn"] {
+  filter: blur(16px) saturate(0.4);
+  pointer-events: none;
+}
+
 #ce-root {
   position: fixed;
   inset: 0;
@@ -75,6 +83,14 @@ html.ce-active::-webkit-scrollbar {
 }
 .ce-btn:hover { background: var(--ce-surface); }
 .ce-btn:disabled { opacity: 0.5; cursor: default; }
+.ce-btn-primary {
+  background: var(--ce-accent);
+  border-color: var(--ce-accent);
+  color: #fff;
+  font-weight: 700;
+  padding: 5px 18px;
+}
+.ce-btn-primary:hover { background: #1a8cd8; }
 .ce-link {
   background: none;
   border: none;
