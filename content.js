@@ -336,9 +336,12 @@
     else if (!want && ui) unmount();
   }
 
+  const CE_BUILD = "b2"; // bump when content.js changes; shown as data-build on the overlay root
+
   function mount() {
     const root = el("div", "ce-root");
     root.id = "ce-root";
+    root.dataset.build = CE_BUILD;
 
     const top = el("header", "ce-top");
     const brand = el("div", "ce-brand", "Clear Eyes");
