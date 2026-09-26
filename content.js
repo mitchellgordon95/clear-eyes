@@ -83,7 +83,7 @@
   //   Local commands: { type: "ce-dev", id, local: "pause" | "resume" | "state" }
 
   const BRIDGE_ALLOWED = new Set([
-    "GET_TUNING", "SET_TUNING", "GET_CLUSTERS", "RESET_CLUSTERS", "CLUSTER_BATCH", "RELOAD_EXTENSION", "GET_STATUS"
+    "GET_TUNING", "SET_TUNING", "GET_CLUSTERS", "GET_CLUSTER_POSTS", "RESET_CLUSTERS", "CLUSTER_BATCH", "RELOAD_EXTENSION", "GET_STATUS"
   ]);
   let ingestPaused = false;
 
@@ -292,8 +292,15 @@
           }
         }
         if (resp.clusters) clusters = resp.clusters;
+        const wasAtBottom = listAtBottom();
         render();
         if (missing.length) failBatch(missing);
+        // The user scrolled to the bottom to pull more posts; once the last
+        // in-flight batch lands, bring them back to the top where the biggest
+        // (and just-updated) beats are.
+        if (wasAtBottom && inFlight === 0 && queue.length === 0 && !pumpTimer && ui) {
+          ui.list.scrollTo({ top: 0, behavior: "smooth" });
+        }
       });
     } catch (_) {
       if (done()) failBatch(batch);
@@ -337,7 +344,7 @@
     else if (!want && ui) unmount();
   }
 
-  const CE_BUILD = "b3"; // bump when content.js changes; shown as data-build on the overlay root
+  const CE_BUILD = "b4"; // bump when content.js changes; shown as data-build on the overlay root
 
   function mount() {
     const root = el("div", "ce-root");
@@ -380,7 +387,7 @@
     window.addEventListener("keyup", swallowKey, true);
     window.addEventListener("keypress", swallowKey, true);
 
-    ui = { root, stats, notice, list, tail, tailHead, tailList, cards: new Map() };
+    ui = { root, stats, notice, list, tail, tailHead, tailList, cards: new Map(), expanded: new Set(), pinned: new Set(), postsCache: new Map() };
     render();
   }
 
@@ -437,6 +444,12 @@
     if (ui) e.stopImmediatePropagation();
   }
 
+  function listAtBottom() {
+    if (!ui) return false;
+    const list = ui.list;
+    return list.scrollTop + list.clientHeight >= list.scrollHeight - 2;
+  }
+
   function requestScroll(dy) {
     if (!ui) return;
     const list = ui.list;
@@ -444,7 +457,7 @@
       list.scrollTop += dy;
       return;
     }
-    const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 2;
+    const atBottom = listAtBottom();
     if (!atBottom) {
       list.scrollTop += dy;
       return;
@@ -528,8 +541,8 @@
     const list = ui.list;
     const cards = ui.cards;
     const sorted = clusters.slice().sort((a, b) => b.count - a.count || a.createdAt - b.createdAt);
-    const main = sorted.filter((c) => c.count >= 2);
-    const tail = sorted.filter((c) => c.count < 2);
+    const main = sorted.filter((c) => c.count >= 2 || ui.pinned.has(c.id));
+    const tail = sorted.filter((c) => c.count < 2 && !ui.pinned.has(c.id));
 
     // FLIP: remember where each card was so reorders animate.
     const before = new Map();
@@ -561,11 +574,19 @@
       : "";
     ui.tailList.innerHTML = "";
     for (const c of tail) {
-      const item = el("span", "ce-tail-item", c.title);
+      const item = el("button", "ce-tail-item", c.title);
       item.title = c.summary || "";
       const cat = Object.keys(c.categories || {})[0];
       const info = cat && categoryInfo[cat];
       if (info && info.action === "hide") item.dataset.noise = "1";
+      // Clicking a one-off promotes it to an expanded card so its post can be read.
+      item.addEventListener("click", () => {
+        ui.pinned.add(c.id);
+        ui.expanded.add(c.id);
+        render();
+        const card = ui.cards.get(c.id);
+        if (card) card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      });
       ui.tailList.append(item);
     }
     if (tail.length) list.appendChild(ui.tail);
@@ -594,10 +615,79 @@
     const summary = el("p", "ce-summary");
     const cats = el("div", "ce-cats");
     const tag = el("span", "ce-noise-tag", "mostly noise");
-    body.append(title, summary, cats);
+    const posts = el("div", "ce-posts");
+    body.append(title, summary, cats, posts);
     card.append(count, body, tag);
+    card.addEventListener("click", (e) => {
+      if (e.target.closest("a, button, .ce-posts")) return; // links and the post list handle themselves
+      toggleExpanded(c.id);
+    });
     updateCard(card, c, true);
     return card;
+  }
+
+  // -------------------------------------------------------------------------
+  // Drill-down: an expanded card lists the posts inside the cluster, fetched
+  // from the worker's memo (so it works after X unmounted them or after a
+  // reload). Refetched whenever the cluster's count changes while open.
+
+  function toggleExpanded(id) {
+    if (ui.expanded.has(id)) {
+      ui.expanded.delete(id);
+      if (ui.pinned.has(id)) ui.pinned.delete(id); // a promoted one-off goes back to the chip list
+    } else {
+      ui.expanded.add(id);
+    }
+    render();
+  }
+
+  async function loadPosts(id, count) {
+    const cached = ui.postsCache.get(id);
+    if (cached && cached.count === count) return cached.posts;
+    const resp = await sendMessageAsync({ type: "GET_CLUSTER_POSTS", cluster: id });
+    const posts = (resp && resp.posts) || [];
+    ui.postsCache.set(id, { count, posts });
+    return posts;
+  }
+
+  async function renderPosts(card, c) {
+    const box = card.querySelector(".ce-posts");
+    if (!ui.expanded.has(c.id)) {
+      box.innerHTML = "";
+      card.classList.remove("ce-expanded");
+      return;
+    }
+    card.classList.add("ce-expanded");
+    if (box.dataset.count === String(c.count) && box.children.length) return;
+    box.dataset.count = String(c.count);
+    if (!box.children.length) box.append(el("div", "ce-post-loading", "Loading posts…"));
+    const posts = await loadPosts(c.id, c.count);
+    if (!ui || !ui.expanded.has(c.id)) return;
+    box.innerHTML = "";
+    if (posts.length === 0) {
+      box.append(el("div", "ce-post-loading", "No stored posts for this cluster (they were clustered before this session started)."));
+      return;
+    }
+    for (const p of posts) {
+      const row = el("article", "ce-post");
+      const info = categoryInfo[p.category] || { label: p.category, action: "keep" };
+      if (info.action === "hide") row.dataset.noise = "1";
+      const head = el("div", "ce-post-head");
+      const who = el("a", "ce-post-author", p.author ? "@" + p.author : "post");
+      who.href = p.author ? `https://x.com/${p.author}` : `https://x.com/i/web/status/${p.id}`;
+      who.target = "_blank";
+      who.rel = "noopener";
+      const chip = el("span", "ce-cat", info.label);
+      chip.dataset.action = info.action;
+      const open = el("a", "ce-post-open", "open on X ↗");
+      open.href = p.author ? `https://x.com/${p.author}/status/${p.id}` : `https://x.com/i/web/status/${p.id}`;
+      open.target = "_blank";
+      open.rel = "noopener";
+      head.append(who, chip, open);
+      const text = el("div", "ce-post-text", p.text);
+      row.append(head, text);
+      box.append(row);
+    }
   }
 
   function updateCard(card, c, initial) {
@@ -625,6 +715,7 @@
       cats.append(chip);
     }
     card.dataset.noise = c.count > 0 && hidden / c.count > 0.5 ? "1" : "";
+    renderPosts(card, c);
   }
 
   // -------------------------------------------------------------------------

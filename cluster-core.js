@@ -343,11 +343,25 @@
       cluster.categories[v.category] = (cluster.categories[v.category] || 0) + 1;
       cluster.updatedAt = now;
       const a = { cluster: cid, category: v.category };
-      state.tweets[t.id] = a;
+      // The memo also keeps the post itself so a cluster can be opened later,
+      // after X has unmounted the tweet (or after a page reload).
+      state.tweets[t.id] = { cluster: cid, category: v.category, author: String(t.author || "").slice(0, 40), text: String(t.text || "").slice(0, 500), at: now };
       state.tweetOrder.push(t.id);
       assigned[t.id] = a;
     }
     return { assigned, log };
+  }
+
+  // Posts currently in a cluster (follows merge aliases), newest first.
+  function clusterPosts(state, clusterId) {
+    const out = [];
+    for (let i = state.tweetOrder.length - 1; i >= 0; i--) {
+      const id = state.tweetOrder[i];
+      const m = state.tweets[id];
+      if (!m || resolveAlias(state, m.cluster) !== clusterId) continue;
+      out.push({ id, author: m.author || "", text: m.text || "", category: m.category, at: m.at || 0 });
+    }
+    return out;
   }
 
   // -------------------------------------------------------------------------
@@ -427,6 +441,7 @@
     normalizeState,
     resolveAlias,
     clusterList,
+    clusterPosts,
     lookupMemo,
     pruneState,
     buildSystemPrompt,

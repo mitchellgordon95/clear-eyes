@@ -7,7 +7,7 @@ importScripts("shared.js", "cluster-core.js");
 
 const API_URL = "https://api.anthropic.com/v1/messages";
 const STATE_KEY = "clusterState"; // chrome.storage.session — survives SW restarts, cleared when browser closes
-const TWEET_MEMO_MAX = 20000; // tweet -> assignment memo (dedupes re-encounters)
+const TWEET_MEMO_MAX = 6000; // tweet -> assignment + text memo (dedupes re-encounters, backs cluster drill-down); ~3MB of the 10MB session quota
 const CONSOLIDATE_EVERY = 3; // batches between merge-only consolidation passes
 const CONSOLIDATE_MIN_CLUSTERS = 8;
 
@@ -41,6 +41,8 @@ async function handleMessage(msg) {
       return enqueueBatch(msg.tweets);
     case "GET_CLUSTERS":
       return getClusterView();
+    case "GET_CLUSTER_POSTS":
+      return { posts: CE_CORE.clusterPosts(await getState(), String(msg.cluster)) };
     case "RESET_CLUSTERS":
       await chrome.storage.session.remove(STATE_KEY);
       return { ok: true };

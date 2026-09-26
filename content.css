@@ -237,6 +237,56 @@ html.ce-active::-webkit-scrollbar {
   cursor: default;
 }
 .ce-tail-item[data-noise="1"] { opacity: 0.4; }
+.ce-tail-item:hover { background: var(--ce-surface); opacity: 1; cursor: pointer; }
+
+/* Drill-down: posts inside an expanded cluster. */
+.ce-card { cursor: pointer; }
+.ce-card.ce-expanded { background: var(--ce-surface-hover); }
+.ce-card.ce-expanded[data-noise="1"] { opacity: 0.9; }
+.ce-posts { cursor: auto; }
+.ce-posts:not(:empty) {
+  margin-top: 12px;
+  border-top: 1px solid var(--ce-border);
+  padding-top: 4px;
+}
+.ce-post-loading {
+  color: var(--ce-muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+.ce-post {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ce-border);
+}
+.ce-post:last-child { border-bottom: none; }
+.ce-post[data-noise="1"] { opacity: 0.55; }
+.ce-post[data-noise="1"]:hover { opacity: 1; }
+.ce-post-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12.5px;
+}
+.ce-post-author {
+  color: var(--ce-text);
+  font-weight: 700;
+  text-decoration: none;
+}
+.ce-post-author:hover { text-decoration: underline; }
+.ce-post-open {
+  margin-left: auto;
+  color: var(--ce-accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.ce-post-open:hover { text-decoration: underline; }
+.ce-post-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.4;
+}
 
 .ce-noise-tag {
   display: none;
