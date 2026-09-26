@@ -63,7 +63,7 @@ const CE_DEFAULT_SELECTORS = {
 const CE_DEFAULT_CONFIG = {
   enabled: true,
   apiKey: "",
-  model: "claude-haiku-4-5",
+  model: "claude-sonnet-5", // clustering quality on Haiku 4.5 was clearly worse (misfiled posts, umbrella merges); see tools/harness.mjs
   homeOnly: true, // only take over the Home timeline (/home); other pages show X as-is
   hideAds: true, // skip promoted tweets (detected locally, never sent to the API)
   repairModel: "claude-opus-5", // latest Opus alias; used only for selector self-repair

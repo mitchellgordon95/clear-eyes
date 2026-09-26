@@ -210,6 +210,34 @@ html.ce-active::-webkit-scrollbar {
   color: var(--ce-hide-text);
 }
 
+/* One-off topics (single post so far): compact chips under the cards. */
+.ce-tail {
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ce-border);
+}
+.ce-tail-head {
+  color: var(--ce-muted);
+  font-size: 12.5px;
+  margin-bottom: 8px;
+}
+.ce-tail-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ce-tail-item {
+  font-size: 12.5px;
+  line-height: 1.2;
+  padding: 5px 10px;
+  border: 1px solid var(--ce-border);
+  border-radius: 999px;
+  color: var(--ce-text);
+  opacity: 0.8;
+  cursor: default;
+}
+.ce-tail-item[data-noise="1"] { opacity: 0.4; }
+
 .ce-noise-tag {
   display: none;
   position: absolute;

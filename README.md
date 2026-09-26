@@ -14,6 +14,25 @@ Bring your own Anthropic API key. No server, no build step, no middleman.
 6. **Scrolling the overlay scrolls X underneath.** Wheel and keyboard input is forwarded to the hidden page in sub-viewport steps so X's virtualized list mounts every cell (nothing gets skipped) and its infinite scroll keeps fetching. When X is busy loading, the pump waits.
 7. Cluster state lives in `storage.session` (cleared when the browser closes) and each tweet is memoized by id, so re-encountering a tweet never double-counts or costs an API call. "Reset clusters" starts a fresh session.
 
+## Clustering model and tuning
+
+Every cluster is a **beat**: a subject that keeps coming up, named the way a newsroom names a beat ("AI coding agents and developer workflows", "Nor'easter flooding", "Landlords, HOAs, and housing rules"). Formats and tones ("viral clips", "hot takes", "personal anecdotes") are explicitly forbidden as clusters. Each batch call can assign posts, rename beats to honestly cover a new angle, merge same-subject beats, or create new ones; every third batch a merge-only **consolidation pass** looks at the whole beat list and folds duplicates created in different batches.
+
+A real "For you" feed has a handful of shared conversations and a long tail of one-offs, so the overlay shows beats with 2+ posts as cards and one-post beats as a compact chip list underneath; a chip becomes a card the moment its second post lands.
+
+The default model is `claude-sonnet-5`. Tuned side-by-side on a saved corpus, Haiku 4.5 misfiled posts (it writes category ids into the cluster field, cites clusters by slug) and its consolidation invented umbrellas like "Disputes, agreements, and stakeholder conflicts". Cost on Sonnet is roughly $1.3 per 1,000 posts including consolidation.
+
+The prompt/schema/state logic is in `cluster-core.js` (shared by the worker and the offline harness), and the clustering guidance is overridable from the options page. To iterate without the extension:
+
+```
+echo 'ANTHROPIC_API_KEY=sk-ant-...' > ~/.clear-eyes.env   # read only by the harness
+node tools/harness.mjs --model claude-sonnet-5 --consolidate 3 --seed 1        # built-in prompt
+node tools/harness.mjs --guidance tools/prompts/v3-beats.txt --seed 2 --quiet  # a prompt variant
+node tools/summarize.mjs                                                        # metrics across saved runs
+```
+
+The harness replays `tools/corpus/*.json` through the exact worker path (serialized batches of 20, each seeing the previous batch's clusters), prints every cluster with its members, and saves runs to `~/.clear-eyes-runs/`. Harvest a fresh corpus by collecting `article[data-testid="tweet"]` text/ids from a scrolled timeline.
+
 ## Install
 
 1. `git clone` this repo (or download it).

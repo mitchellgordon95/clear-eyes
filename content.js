@@ -281,18 +281,19 @@
         }
         if (resp.disabled) return;
         if (resp.categories) categoryInfo = Object.assign(categoryInfo, resp.categories);
+        const missing = []; // the model skipped these or cited a cluster that doesn't exist; retry
         for (const t of batch) {
           const a = resp.assigned && resp.assigned[t.id];
           if (a) {
             seen.set(t.id, a);
             retryCounts.delete(t.id);
           } else {
-            seen.set(t.id, "failed");
-            skipped.failed++;
+            missing.push(t);
           }
         }
         if (resp.clusters) clusters = resp.clusters;
         render();
+        if (missing.length) failBatch(missing);
       });
     } catch (_) {
       if (done()) failBatch(batch);
@@ -336,7 +337,7 @@
     else if (!want && ui) unmount();
   }
 
-  const CE_BUILD = "b2"; // bump when content.js changes; shown as data-build on the overlay root
+  const CE_BUILD = "b3"; // bump when content.js changes; shown as data-build on the overlay root
 
   function mount() {
     const root = el("div", "ce-root");
@@ -362,6 +363,10 @@
 
     const notice = el("div", "ce-notice");
     const list = el("main", "ce-list");
+    const tail = el("section", "ce-tail");
+    const tailHead = el("div", "ce-tail-head");
+    const tailList = el("div", "ce-tail-list");
+    tail.append(tailHead, tailList);
     const foot = el("footer", "ce-foot", "Scroll to pull more posts from your timeline");
 
     root.append(top, notice, list, foot);
@@ -375,7 +380,7 @@
     window.addEventListener("keyup", swallowKey, true);
     window.addEventListener("keypress", swallowKey, true);
 
-    ui = { root, stats, notice, list, cards: new Map() };
+    ui = { root, stats, notice, list, tail, tailHead, tailList, cards: new Map() };
     render();
   }
 
@@ -516,17 +521,22 @@
     }
   }
 
+  // Clusters with 2+ posts are cards. One-post clusters are the long tail of
+  // any feed (most of it, early on); they sit in a compact list underneath and
+  // get promoted to a card the moment a second post lands.
   function renderClusters() {
     const list = ui.list;
     const cards = ui.cards;
     const sorted = clusters.slice().sort((a, b) => b.count - a.count || a.createdAt - b.createdAt);
+    const main = sorted.filter((c) => c.count >= 2);
+    const tail = sorted.filter((c) => c.count < 2);
 
     // FLIP: remember where each card was so reorders animate.
     const before = new Map();
     for (const [id, card] of cards) before.set(id, card.getBoundingClientRect().top);
 
     const live = new Set();
-    for (const c of sorted) {
+    for (const c of main) {
       live.add(c.id);
       let card = cards.get(c.id);
       if (!card) {
@@ -544,6 +554,22 @@
         cards.delete(id);
       }
     }
+
+    // Tail section always last.
+    ui.tailHead.textContent = tail.length
+      ? `${tail.length} one-off${tail.length === 1 ? "" : "s"} — topics with a single post so far`
+      : "";
+    ui.tailList.innerHTML = "";
+    for (const c of tail) {
+      const item = el("span", "ce-tail-item", c.title);
+      item.title = c.summary || "";
+      const cat = Object.keys(c.categories || {})[0];
+      const info = cat && categoryInfo[cat];
+      if (info && info.action === "hide") item.dataset.noise = "1";
+      ui.tailList.append(item);
+    }
+    if (tail.length) list.appendChild(ui.tail);
+    else ui.tail.remove();
 
     for (const [id, card] of cards) {
       const prev = before.get(id);
