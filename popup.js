@@ -34,6 +34,8 @@ function refresh() {
     $("enabled").checked = !!resp.config.enabled;
     $("classified").textContent = resp.stats.classified;
     $("clusters").textContent = resp.clusterCount;
+    $("slop").textContent = resp.slopCount != null ? resp.slopCount : "–";
+    $("tags").textContent = resp.labels ? `${resp.labels.nSlop} slop · ${resp.labels.nOk} kept` : "–";
     $("apiCalls").textContent = resp.stats.apiCalls;
     $("noKey").style.display = resp.config.apiKey ? "none" : "block";
     $("healthWarn").style.display = resp.selectorHealth && resp.selectorHealth.ok === false ? "block" : "none";

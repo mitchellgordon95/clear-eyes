@@ -14,6 +14,14 @@ Bring your own Anthropic API key. No server, no build step, no middleman.
 6. **Scrolling the overlay scrolls X underneath.** Wheel and keyboard input is forwarded to the hidden page in sub-viewport steps so X's virtualized list mounts every cell (nothing gets skipped) and its infinite scroll keeps fetching. When X is busy loading, the pump waits.
 7. Cluster state lives in `storage.session` (cleared when the browser closes) and each tweet is memoized by id, so re-encountering a tweet never double-counts or costs an API call. "Reset clusters" starts a fresh session.
 
+## Slop vs. not slop: one rule, learned from your tags
+
+There are no category buckets. Every incoming post gets one binary call: **slop or not**. Slop is never clustered; it is swept into a collapsed sidebar on the right. Non-slop posts go into topic clusters in the middle.
+
+What decides slop is a single natural-language **rule**, shown in the band under the header. Before you've tagged anything it's a seed rule (platitudes, rage bait, drama, engagement farming). Every post you can see has a tag button: **slop** on posts inside clusters, **not slop** on posts in the slop sidebar. Tagging a post moves it immediately (a clustered post drops out of its cluster into the slop sidebar; a rescued post is clustered and also listed in the **Kept** sidebar on the left), and then a model reads *all* your tagged posts and rewrites the rule you seem to be applying. The classifier only ever sees the rule, never the examples — so the rule is the thing to read, argue with, and watch evolve. Tags and the rule persist across sessions; clusters are per session.
+
+Rule rewrites run on the same model as clustering by default (`claude-opus-5` is a good upgrade for this one call, set separately in options). They're coalesced while one is in flight, so rapid tagging costs one call, not ten.
+
 ## Clustering model and tuning
 
 Every cluster is a **beat**: a subject that keeps coming up, named the way a newsroom names a beat ("AI coding agents and developer workflows", "Nor'easter flooding", "Landlords, HOAs, and housing rules"). Formats and tones ("viral clips", "hot takes", "personal anecdotes") are explicitly forbidden as clusters. Each batch call can assign posts, rename beats to honestly cover a new angle, merge same-subject beats, or create new ones; every third batch a merge-only **consolidation pass** looks at the whole beat list and folds duplicates created in different batches.
@@ -50,10 +58,8 @@ Tip: create a dedicated API key with a monthly spend limit for this.
 
 Everything is in the options page:
 
-- **Model** — defaults to `claude-haiku-4-5` (fastest/cheapest). `claude-sonnet-5` clusters more coherently at ~2–3x the cost.
-- **Categories** — the per-post quality taxonomy, fully editable. Each is `{id, label, description, keep|hide}` and the descriptions *are* the prompt. Cluster cards show the breakdown per category. Defaults:
-  - keep: intellectual value, personal growth, news/announcements
-  - hide: slop/engagement bait, rage bait, drama
+- **Model** — `claude-sonnet-5` by default for the slop + clustering call. A separate model can be set for rule rewrites.
+- **Slop rule** — read-only view of the current rule, with buttons to force a rewrite or forget all tags.
 - **Enabled** — off means X looks normal again. Same toggle in the popup.
 - **Home only** (default on) — take over just `/home`; profiles, search, and threads show X as-is.
 - **Skip ads** (default on) — promoted tweets are detected straight from the DOM ("Ad"/"Promoted" marker, English UI) and never sent to the API.

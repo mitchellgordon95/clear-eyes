@@ -1,15 +1,20 @@
 // Background service worker: owns all Anthropic API calls, the cluster state,
-// the toolbar badge, and session stats. Content scripts talk to it via messages.
-// The clustering logic itself (prompt, schema, parsing, state updates) lives in
-// cluster-core.js so tools/harness.mjs can run it offline.
+// the user's slop labels and derived rule, the toolbar badge, and session
+// stats. Content scripts talk to it via messages. The clustering/slop logic
+// itself (prompts, schemas, parsing, state updates) lives in cluster-core.js
+// so tools/harness.mjs can run it offline.
 
 importScripts("shared.js", "cluster-core.js");
 
 const API_URL = "https://api.anthropic.com/v1/messages";
 const STATE_KEY = "clusterState"; // chrome.storage.session — survives SW restarts, cleared when browser closes
-const TWEET_MEMO_MAX = 6000; // tweet -> assignment + text memo (dedupes re-encounters, backs cluster drill-down); ~3MB of the 10MB session quota
+const LABELS_KEY = "labels"; // chrome.storage.local — the user's slop/ok tags, persist across sessions
+const RULE_KEY = "slopRule"; // chrome.storage.local — {text, derivedAt, nSlop, nOk}
+const TWEET_MEMO_MAX = 6000; // tweet -> assignment + text memo; ~3MB of the 10MB session quota
+const LABELS_MAX = 2000;
 const CONSOLIDATE_EVERY = 3; // batches between merge-only consolidation passes
 const CONSOLIDATE_MIN_CLUSTERS = 8;
+const VIEW_SLOP_MAX = 200; // newest slop posts sent to the overlay
 
 // One-time migration (2026-09-26): clustering was tuned on Sonnet 5; Haiku
 // misfiles posts and merges unrelated beats. Move existing installs over once.
@@ -39,12 +44,22 @@ async function handleMessage(msg) {
       return { config: await ceGetConfig() };
     case "CLUSTER_BATCH":
       return enqueueBatch(msg.tweets);
-    case "GET_CLUSTERS":
-      return getClusterView();
+    case "GET_VIEW":
+      return getView();
     case "GET_CLUSTER_POSTS":
       return { posts: CE_CORE.clusterPosts(await getState(), String(msg.cluster)) };
+    case "SET_LABEL":
+      return setLabel(msg);
+    case "GET_RULE":
+      return getRuleInfo();
+    case "DERIVE_RULE":
+      deriveRule();
+      return { ok: true };
     case "RESET_CLUSTERS":
       await chrome.storage.session.remove(STATE_KEY);
+      return { ok: true };
+    case "RESET_LABELS":
+      await chrome.storage.local.remove([LABELS_KEY, RULE_KEY]);
       return { ok: true };
     case "OPEN_OPTIONS":
       chrome.runtime.openOptionsPage();
@@ -79,6 +94,7 @@ async function getTuning() {
   const config = await ceGetConfig();
   return {
     model: config.model,
+    ruleModel: config.ruleModel || "",
     clusterPrompt: config.clusterPrompt || "",
     defaultClusterPrompt: CE_CORE.DEFAULT_CLUSTER_GUIDANCE,
     devBridge: config.devBridge !== false
@@ -88,9 +104,128 @@ async function getTuning() {
 async function setTuning(msg) {
   const config = await ceGetConfig();
   if (typeof msg.model === "string" && msg.model.trim()) config.model = msg.model.trim();
+  if (typeof msg.ruleModel === "string") config.ruleModel = msg.ruleModel.trim();
   if (typeof msg.clusterPrompt === "string") config.clusterPrompt = msg.clusterPrompt;
   await ceSaveConfig(config);
   return getTuning();
+}
+
+// ---------------------------------------------------------------------------
+// State / labels / rule storage
+
+async function getState() {
+  const stored = await chrome.storage.session.get(STATE_KEY);
+  return CE_CORE.normalizeState(stored[STATE_KEY]);
+}
+
+async function saveState(state) {
+  CE_CORE.pruneState(state, TWEET_MEMO_MAX);
+  await chrome.storage.session.set({ [STATE_KEY]: state });
+}
+
+async function getLabels() {
+  const stored = await chrome.storage.local.get(LABELS_KEY);
+  return stored[LABELS_KEY] || {};
+}
+
+async function saveLabels(labels) {
+  const ids = Object.keys(labels);
+  if (ids.length > LABELS_MAX) {
+    ids.sort((a, b) => (labels[a].at || 0) - (labels[b].at || 0));
+    for (const id of ids.slice(0, ids.length - LABELS_MAX)) delete labels[id];
+  }
+  await chrome.storage.local.set({ [LABELS_KEY]: labels });
+}
+
+async function getRuleInfo() {
+  const stored = await chrome.storage.local.get(RULE_KEY);
+  const r = stored[RULE_KEY];
+  return {
+    rule: r && r.text ? r.text : CE_CORE.SEED_RULE,
+    seed: !(r && r.text),
+    derivedAt: r ? r.derivedAt || 0 : 0,
+    nSlop: r ? r.nSlop || 0 : 0,
+    nOk: r ? r.nOk || 0 : 0,
+    updating: ruleInFlight,
+    error: ruleError
+  };
+}
+
+function labelCounts(labels) {
+  let nSlop = 0, nOk = 0;
+  for (const l of Object.values(labels)) if (l.label === "slop") nSlop++; else nOk++;
+  return { nSlop, nOk };
+}
+
+async function getView() {
+  const [config, state, labels, rule] = await Promise.all([ceGetConfig(), getState(), getLabels(), getRuleInfo()]);
+  const kept = Object.entries(labels)
+    .filter(([, l]) => l.label === "ok")
+    .map(([id, l]) => ({ id, author: l.author || "", text: l.text || "", at: l.at || 0 }))
+    .sort((a, b) => b.at - a.at);
+  return {
+    clusters: CE_CORE.clusterList(state),
+    slop: CE_CORE.slopPosts(state).slice(0, VIEW_SLOP_MAX),
+    kept,
+    rule,
+    labels: labelCounts(labels),
+    hasKey: !!config.apiKey
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Labels → state update, and (re)derive the rule
+
+async function setLabel(msg) {
+  const id = String(msg.id || "");
+  const label = msg.label === "slop" ? "slop" : "ok";
+  if (!id) return { error: "missing id" };
+
+  const [state, labels] = await Promise.all([getState(), getLabels()]);
+  const prev = state.tweets[id] || {};
+  const meta = { author: msg.author || prev.author || "", text: msg.text || prev.text || "" };
+  labels[id] = { label, author: meta.author.slice(0, 40), text: meta.text.slice(0, 600), at: Date.now() };
+  await saveLabels(labels);
+
+  const { needsCluster } = CE_CORE.setLabel(state, id, label, meta, Date.now());
+  await saveState(state);
+
+  if (needsCluster) {
+    // Rescued from slop: cluster it now, flagged so the model can't re-slop it.
+    await enqueueBatch([{ id, author: meta.author, text: meta.text, confirmedOk: true }]);
+  }
+  deriveRule(); // fire and forget; coalesced
+  return getView();
+}
+
+let ruleInFlight = false;
+let ruleDirty = false;
+let ruleError = null;
+
+async function deriveRule() {
+  if (ruleInFlight) {
+    ruleDirty = true;
+    return;
+  }
+  ruleInFlight = true;
+  try {
+    do {
+      ruleDirty = false;
+      const [config, labels, current] = await Promise.all([ceGetConfig(), getLabels(), getRuleInfo()]);
+      if (!config.apiKey || Object.keys(labels).length === 0) break;
+      const text = await callClaude(CE_CORE.buildRuleRequest(labels, config, current.rule), config.apiKey);
+      const rule = CE_CORE.parseRuleResponse(text);
+      const counts = labelCounts(labels);
+      await chrome.storage.local.set({ [RULE_KEY]: { text: rule, derivedAt: Date.now(), nSlop: counts.nSlop, nOk: counts.nOk } });
+      await bumpStats(0, 0, 1);
+      ruleError = null;
+    } while (ruleDirty);
+  } catch (e) {
+    ruleError = String(e && e.message ? e.message : e);
+    console.warn("[clear-eyes] rule derivation failed:", ruleError);
+  } finally {
+    ruleInFlight = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -108,21 +243,6 @@ function enqueueBatch(tweets) {
   return p;
 }
 
-async function getState() {
-  const stored = await chrome.storage.session.get(STATE_KEY);
-  return CE_CORE.normalizeState(stored[STATE_KEY]);
-}
-
-async function saveState(state) {
-  CE_CORE.pruneState(state, TWEET_MEMO_MAX);
-  await chrome.storage.session.set({ [STATE_KEY]: state });
-}
-
-async function getClusterView() {
-  const [config, state] = await Promise.all([ceGetConfig(), getState()]);
-  return { clusters: CE_CORE.clusterList(state), categories: categoryActions(config) };
-}
-
 async function clusterBatch(tweets) {
   const config = await ceGetConfig();
   if (!config.enabled) return { assigned: {}, clusters: [], disabled: true };
@@ -135,16 +255,18 @@ async function clusterBatch(tweets) {
   const assigned = {};
   const toClassify = [];
   for (const t of tweets) {
-    const memo = CE_CORE.lookupMemo(state, t.id);
+    const memo = t.confirmedOk ? null : CE_CORE.lookupMemo(state, t.id);
     if (memo) assigned[t.id] = memo;
     else toClassify.push(t);
   }
 
+  let slopAdded = [];
   if (toClassify.length > 0) {
     let result;
     try {
-      const text = await callClaude(CE_CORE.buildRequest(toClassify, state, config), config.apiKey);
-      result = CE_CORE.parseResponse(text, toClassify, config);
+      const rule = (await getRuleInfo()).rule;
+      const text = await callClaude(CE_CORE.buildRequest(toClassify, state, config, rule), config.apiKey);
+      result = CE_CORE.parseResponse(text, toClassify);
     } catch (e) {
       const message = "Anthropic API error: " + (e && e.message ? e.message : e);
       await setBadge("err", "#dc322f");
@@ -156,6 +278,9 @@ async function clusterBatch(tweets) {
 
     const applied = CE_CORE.applyResult(state, toClassify, result, Date.now());
     Object.assign(assigned, applied.assigned);
+    slopAdded = toClassify
+      .filter((t) => applied.assigned[t.id] && applied.assigned[t.id].slop)
+      .map((t) => ({ id: t.id, author: t.author || "", text: String(t.text || "").slice(0, 500), at: Date.now(), source: "auto" }));
     let calls = 1;
 
     // Every few batches, a merge-only pass over the cluster list folds
@@ -167,33 +292,19 @@ async function clusterBatch(tweets) {
         CE_CORE.applyConsolidation(state, CE_CORE.parseConsolidateResponse(ctext), Date.now());
         calls++;
         for (const [id, a] of Object.entries(assigned)) {
+          if (!a.cluster) continue;
           const cid = CE_CORE.resolveAlias(state, a.cluster);
-          if (cid) assigned[id] = { cluster: cid, category: a.category };
+          if (cid) assigned[id] = { cluster: cid };
         }
       } catch (e) {
         console.warn("[clear-eyes] consolidation failed:", e && e.message ? e.message : e);
       }
     }
     await saveState(state);
-    await bumpStats(toClassify.length, countHidden(applied.assigned, config), calls);
+    await bumpStats(toClassify.length, applied.log.slop, calls);
   }
 
-  return { assigned, clusters: CE_CORE.clusterList(state), categories: categoryActions(config) };
-}
-
-function categoryActions(config) {
-  const out = {};
-  for (const c of config.categories) out[c.id] = { label: c.label, action: c.action };
-  return out;
-}
-
-function countHidden(assigned, config) {
-  const actions = categoryActions(config);
-  let n = 0;
-  for (const v of Object.values(assigned)) {
-    if (actions[v.category] && actions[v.category].action === "hide") n++;
-  }
-  return n;
+  return { assigned, clusters: CE_CORE.clusterList(state), slopAdded };
 }
 
 // POST a prepared body; returns the text block of the response.
@@ -234,7 +345,7 @@ async function testKey(apiKey, model) {
         "anthropic-dangerous-direct-browser-access": "true"
       },
       body: JSON.stringify({
-        model: model || "claude-haiku-4-5",
+        model: model || "claude-sonnet-5",
         max_tokens: 1,
         messages: [{ role: "user", content: "ping" }]
       })
@@ -324,7 +435,7 @@ async function bumpStats(classified, hidden, apiCalls) {
   const stored = await chrome.storage.local.get("stats");
   const stats = stored.stats || { classified: 0, hidden: 0, apiCalls: 0, since: Date.now() };
   stats.classified += classified;
-  stats.hidden += hidden;
+  stats.hidden += hidden; // slop count
   stats.apiCalls += apiCalls;
   await chrome.storage.local.set({ stats });
 }
@@ -336,15 +447,18 @@ async function reportHealth(ok) {
 }
 
 async function getStatus() {
-  const [config, stored, state] = await Promise.all([
+  const [config, stored, state, labels] = await Promise.all([
     ceGetConfig(),
     chrome.storage.local.get(["stats", "selectorHealth", "lastError"]),
-    getState()
+    getState(),
+    getLabels()
   ]);
   return {
     config,
     stats: stored.stats || { classified: 0, hidden: 0, apiCalls: 0, since: Date.now() },
     clusterCount: Object.keys(state.clusters).length,
+    slopCount: state.slop.length,
+    labels: labelCounts(labels),
     selectorHealth: stored.selectorHealth || { ok: true, at: 0 },
     lastError: stored.lastError || null
   };

@@ -9,10 +9,10 @@
   --ce-text: #e7e9ea;
   --ce-muted: #71767b;
   --ce-accent: #1d9bf0;
+  --ce-slop: #f4212e;
+  --ce-slop-soft: rgba(244, 33, 46, 0.14);
   --ce-keep: rgba(29, 155, 240, 0.16);
   --ce-keep-text: #8ecdf7;
-  --ce-hide: rgba(244, 33, 46, 0.14);
-  --ce-hide-text: #f4a3a9;
   --ce-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
@@ -48,13 +48,13 @@ html.ce-composing [data-testid="sidebarColumn"] {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Header */
 .ce-top {
   display: flex;
   align-items: center;
-  gap: 16px;
-  width: min(640px, 100%);
-  margin: 0 auto;
-  padding: 14px 16px 10px;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px 10px;
   box-sizing: border-box;
   border-bottom: 1px solid var(--ce-border);
 }
@@ -62,6 +62,7 @@ html.ce-composing [data-testid="sidebarColumn"] {
   font-weight: 800;
   font-size: 19px;
   letter-spacing: -0.01em;
+  margin-right: 6px;
 }
 .ce-stats {
   flex: 1;
@@ -80,9 +81,11 @@ html.ce-composing [data-testid="sidebarColumn"] {
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+  white-space: nowrap;
 }
 .ce-btn:hover { background: var(--ce-surface); }
 .ce-btn:disabled { opacity: 0.5; cursor: default; }
+.ce-btn.ce-on { background: var(--ce-surface); border-color: var(--ce-muted); }
 .ce-btn-primary {
   background: var(--ce-accent);
   border-color: var(--ce-accent);
@@ -101,6 +104,32 @@ html.ce-composing [data-testid="sidebarColumn"] {
   text-decoration: underline;
 }
 
+/* Rule band: the one definition of slop, rewritten from the user's tags. */
+.ce-rule {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 16px 10px;
+  border-bottom: 1px solid var(--ce-border);
+  background: #0a0a0a;
+  max-height: 22vh;
+  overflow-y: auto;
+}
+.ce-rule-head {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ce-muted);
+  margin-bottom: 4px;
+}
+.ce-rule-updating .ce-rule-head { color: var(--ce-accent); }
+.ce-rule-text {
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--ce-text);
+  white-space: pre-wrap;
+  max-width: 1100px;
+}
+
 .ce-notice {
   width: min(640px, 100%);
   margin: 0 auto;
@@ -110,11 +139,67 @@ html.ce-composing [data-testid="sidebarColumn"] {
   text-align: center;
 }
 
+/* Three columns: kept (left) · clusters (center) · slop (right) */
+.ce-columns {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+.ce-center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ce-side {
+  flex: 0 0 340px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--ce-border);
+  background: #070707;
+}
+.ce-side-right { border-right: none; border-left: 1px solid var(--ce-border); }
+.ce-side.ce-collapsed {
+  flex-basis: 40px;
+  cursor: pointer;
+}
+.ce-side.ce-collapsed .ce-side-list { display: none; }
+.ce-side-head {
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--ce-muted);
+  border-bottom: 1px solid var(--ce-border);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ce-side.ce-collapsed .ce-side-head {
+  writing-mode: vertical-rl;
+  border-bottom: none;
+  padding: 14px 10px;
+  height: 100%;
+  box-sizing: border-box;
+}
+.ce-side-right .ce-side-head { color: #e8a0a5; }
+.ce-side-list {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px 24px;
+}
+.ce-side .ce-post { padding: 10px 0; }
+.ce-side-right .ce-post { opacity: 0.75; }
+.ce-side-right .ce-post:hover { opacity: 1; }
+
 .ce-list {
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  width: min(640px, 100%);
+  width: min(680px, 100%);
   margin: 0 auto;
   padding: 12px 16px 40px;
   box-sizing: border-box;
@@ -124,7 +209,7 @@ html.ce-composing [data-testid="sidebarColumn"] {
 }
 
 .ce-foot {
-  width: min(640px, 100%);
+  width: min(680px, 100%);
   margin: 0 auto;
   padding: 10px 16px;
   box-sizing: border-box;
@@ -149,11 +234,11 @@ html.ce-composing [data-testid="sidebarColumn"] {
   border: 1px solid var(--ce-border);
   border-radius: 16px;
   background: var(--ce-surface);
+  cursor: pointer;
   transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s, background 0.15s;
 }
 .ce-card:hover { background: var(--ce-surface-hover); }
-.ce-card[data-noise="1"] { opacity: 0.55; }
-.ce-card[data-noise="1"]:hover { opacity: 0.85; }
+.ce-card.ce-expanded { background: var(--ce-surface-hover); }
 .ce-card.ce-new { animation: ce-fade-in 0.4s ease-out; }
 @keyframes ce-fade-in {
   from { opacity: 0; transform: translateY(8px); }
@@ -203,27 +288,9 @@ html.ce-composing [data-testid="sidebarColumn"] {
   line-height: 1.3;
 }
 .ce-summary {
-  margin: 0 0 8px;
+  margin: 0;
   color: var(--ce-muted);
   font-size: 14px;
-}
-.ce-cats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.ce-cat {
-  font-size: 11.5px;
-  line-height: 1;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: var(--ce-keep);
-  color: var(--ce-keep-text);
-  white-space: nowrap;
-}
-.ce-cat[data-action="hide"] {
-  background: var(--ce-hide);
-  color: var(--ce-hide-text);
 }
 
 /* One-off topics (single post so far): compact chips under the cards. */
@@ -243,22 +310,20 @@ html.ce-composing [data-testid="sidebarColumn"] {
   gap: 6px;
 }
 .ce-tail-item {
+  font: inherit;
   font-size: 12.5px;
   line-height: 1.2;
   padding: 5px 10px;
   border: 1px solid var(--ce-border);
   border-radius: 999px;
+  background: none;
   color: var(--ce-text);
   opacity: 0.8;
-  cursor: default;
+  cursor: pointer;
 }
-.ce-tail-item[data-noise="1"] { opacity: 0.4; }
-.ce-tail-item:hover { background: var(--ce-surface); opacity: 1; cursor: pointer; }
+.ce-tail-item:hover { background: var(--ce-surface); opacity: 1; }
 
-/* Drill-down: posts inside an expanded cluster. */
-.ce-card { cursor: pointer; }
-.ce-card.ce-expanded { background: var(--ce-surface-hover); }
-.ce-card.ce-expanded[data-noise="1"] { opacity: 0.9; }
+/* Posts: inside expanded clusters and in both sidebars. */
 .ce-posts { cursor: auto; }
 .ce-posts:not(:empty) {
   margin-top: 12px;
@@ -273,14 +338,19 @@ html.ce-composing [data-testid="sidebarColumn"] {
 .ce-post {
   padding: 10px 0;
   border-bottom: 1px solid var(--ce-border);
+  transition: opacity 0.25s, transform 0.25s;
 }
 .ce-post:last-child { border-bottom: none; }
-.ce-post[data-noise="1"] { opacity: 0.55; }
-.ce-post[data-noise="1"]:hover { opacity: 1; }
+.ce-post.ce-post-leaving { opacity: 0.25; transform: translateX(12px); }
+.ce-post[data-user="1"] .ce-post-author::after {
+  content: " · tagged";
+  color: var(--ce-muted);
+  font-weight: 400;
+}
 .ce-post-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 4px;
   font-size: 12.5px;
 }
@@ -288,33 +358,47 @@ html.ce-composing [data-testid="sidebarColumn"] {
   color: var(--ce-text);
   font-weight: 700;
   text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .ce-post-author:hover { text-decoration: underline; }
 .ce-post-open {
-  margin-left: auto;
   color: var(--ce-accent);
   text-decoration: none;
   white-space: nowrap;
 }
 .ce-post-open:hover { text-decoration: underline; }
+.ce-tag {
+  margin-left: auto;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--ce-border);
+  background: none;
+  color: var(--ce-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ce-tag:hover { color: var(--ce-text); background: var(--ce-surface); }
+.ce-tag-slop:hover { color: #fff; background: var(--ce-slop); border-color: var(--ce-slop); }
+.ce-tag-ok:hover { color: #fff; background: var(--ce-accent); border-color: var(--ce-accent); }
+.ce-tag:disabled { opacity: 0.5; cursor: default; }
 .ce-post-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 14px;
   line-height: 1.4;
 }
-
-.ce-noise-tag {
-  display: none;
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--ce-hide-text);
+.ce-side .ce-post-text {
+  font-size: 13px;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
-.ce-card[data-noise="1"] .ce-noise-tag { display: block; }
 
 /* Self-repair banner (above the overlay) */
 .ce-repair {

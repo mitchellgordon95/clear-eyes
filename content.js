@@ -2,9 +2,14 @@
 //
 // X's own page keeps running underneath (it is what fetches tweets). We cover
 // it with an opaque overlay, ingest every tweet X mounts into the DOM, ask the
-// background worker to cluster + classify each batch, and render only the
-// clusters. Raw tweets are never displayed. Scrolling the overlay drives X's
-// infinite scroll so more tweets keep arriving and cluster counts grow.
+// background worker to sort each batch (slop / not slop, then cluster), and
+// render clusters in the middle, the user's "kept" posts on the left, and slop
+// swept into a collapsed sidebar on the right. Scrolling the overlay drives
+// X's infinite scroll so more tweets keep arriving and cluster counts grow.
+//
+// Tagging: every visible post has a slop / not-slop button. Tags are the
+// training set for the slop rule, which the worker re-derives and which is
+// shown in the band under the header.
 
 (() => {
   const BATCH_MAX = 20;
@@ -16,6 +21,7 @@
   const PUMP_TICK_MS = 120; // how often the underlying page is nudged
   const PUMP_STALL_MS = 5000; // give up on a scroll request if X stops loading
   const WHEEL_GAIN = 3; // px of underlying scroll per px of wheel delta
+  const CE_BUILD = "b6"; // bump when content.js changes; shown as data-build on the overlay root
 
   let config = null;
   let S = null; // active selectors (config.selectors; rewritten by self-repair)
@@ -23,13 +29,18 @@
   let queuedIds = new Set();
   let flushTimer = null;
   let everSawTweet = false;
-  const seen = new Map(); // tweetId -> {cluster, category} | "pending" | "failed" | "ad" | "notext"
+  const seen = new Map(); // tweetId -> {cluster} | {slop:true} | "pending" | "failed" | "ad" | "notext"
   const retryCounts = new Map(); // tweetId -> failed attempts
   let parked = []; // tweets waiting for an API key
   let inFlight = 0; // tweets currently being classified
   const skipped = { ads: 0, noText: 0, failed: 0 };
-  let clusters = []; // [{id, title, summary, count, categories, createdAt, updatedAt}]
-  let categoryInfo = {}; // id -> {label, action}
+  let ingestPaused = false;
+
+  // View state (from the worker)
+  let clusters = []; // [{id, title, summary, count, createdAt, updatedAt}]
+  let slop = []; // [{id, author, text, at, source}] newest first
+  let kept = []; // posts the user tagged not-slop, newest first
+  let rule = { rule: "", seed: true, derivedAt: 0, nSlop: 0, nOk: 0, updating: false };
   let ui = null; // mounted overlay elements, or null
 
   init();
@@ -38,14 +49,12 @@
     config = await getConfig();
     if (!config) return;
     S = config.selectors;
-    buildLocalCategoryInfo();
 
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "local" || !changes.config) return;
       const hadKey = !!config.apiKey;
       config = Object.assign({}, config, changes.config.newValue || {});
       if (config.selectors) S = config.selectors;
-      buildLocalCategoryInfo();
       syncView();
       if (!hadKey && config.apiKey && parked.length > 0) {
         const p = parked;
@@ -56,11 +65,7 @@
       render();
     });
 
-    const resp = await sendMessageAsync({ type: "GET_CLUSTERS" });
-    if (resp && resp.clusters) {
-      clusters = resp.clusters;
-      if (resp.categories) categoryInfo = Object.assign(categoryInfo, resp.categories);
-    }
+    await refreshView();
 
     const observer = new MutationObserver(() => scheduleSweep());
     observer.observe(document.body, { childList: true, subtree: true });
@@ -72,20 +77,29 @@
     installDevBridge();
   }
 
+  async function refreshView() {
+    const v = await sendMessageAsync({ type: "GET_VIEW" });
+    if (v && !v.error) applyView(v);
+  }
+
+  function applyView(v) {
+    if (v.clusters) clusters = v.clusters;
+    if (v.slop) slop = v.slop;
+    if (v.kept) kept = v.kept;
+    if (v.rule) rule = v.rule;
+    render();
+  }
+
   // -------------------------------------------------------------------------
   // Dev bridge: lets a page script (e.g. an automated tuning session driving
   // the browser) send a whitelisted set of commands to the worker via
   // window.postMessage. The API key never crosses this boundary. Off via the
   // "developer bridge" option.
-  //
-  //   window.postMessage({ type: "ce-dev", id: 1, msg: { type: "GET_TUNING" } }, "*")
-  //   → window "message" event { type: "ce-dev-resp", id: 1, resp: {...} }
-  //   Local commands: { type: "ce-dev", id, local: "pause" | "resume" | "state" }
 
   const BRIDGE_ALLOWED = new Set([
-    "GET_TUNING", "SET_TUNING", "GET_CLUSTERS", "GET_CLUSTER_POSTS", "RESET_CLUSTERS", "CLUSTER_BATCH", "RELOAD_EXTENSION", "GET_STATUS"
+    "GET_TUNING", "SET_TUNING", "GET_VIEW", "GET_CLUSTER_POSTS", "GET_RULE", "SET_LABEL", "DERIVE_RULE",
+    "RESET_CLUSTERS", "RESET_LABELS", "CLUSTER_BATCH", "RELOAD_EXTENSION", "GET_STATUS"
   ]);
-  let ingestPaused = false;
 
   function installDevBridge() {
     window.addEventListener("message", async (e) => {
@@ -96,30 +110,22 @@
       if (local === "pause") { ingestPaused = true; resp = { ok: true, paused: true }; }
       else if (local === "resume") { ingestPaused = false; resp = { ok: true, paused: false }; sweep(); }
       else if (local === "state") {
-        resp = { paused: ingestPaused, seen: seen.size, inFlight, skipped, clusters, queued: queue.length };
+        resp = { paused: ingestPaused, seen: seen.size, inFlight, skipped, clusters, slop: slop.length, kept: kept.length, rule, queued: queue.length };
       } else if (local === "refresh") {
-        const r = await sendMessageAsync({ type: "GET_CLUSTERS" });
-        if (r && r.clusters) { clusters = r.clusters; if (r.categories) categoryInfo = Object.assign(categoryInfo, r.categories); render(); }
+        await refreshView();
         resp = { ok: true };
       } else if (msg && BRIDGE_ALLOWED.has(msg.type)) {
         resp = await sendMessageAsync(msg);
-        if (msg.type === "RESET_CLUSTERS" && resp && resp.ok) {
-          clusters = []; seen.clear(); retryCounts.clear();
+        if ((msg.type === "RESET_CLUSTERS" || msg.type === "RESET_LABELS") && resp && resp.ok) {
+          seen.clear(); retryCounts.clear();
           skipped.ads = skipped.noText = skipped.failed = 0;
-          render();
+          await refreshView();
         }
       } else {
         resp = { error: "not allowed" };
       }
       window.postMessage({ type: "ce-dev-resp", id, resp }, "*");
     });
-  }
-
-  function buildLocalCategoryInfo() {
-    categoryInfo = {};
-    for (const c of config.categories || []) {
-      categoryInfo[c.id] = { label: c.label, action: c.action };
-    }
   }
 
   function getConfig() {
@@ -177,7 +183,7 @@
 
   function openCompose() {
     const a = document.querySelector('[data-testid="SideNav_NewTweet_Button"]');
-    if (a) a.click(); // SPA route change; the modal renders in #layers above the overlay
+    if (a) a.click(); // SPA route change; the modal renders above a blurred timeline
     else location.assign("/compose/post");
   }
 
@@ -262,7 +268,7 @@
   }
 
   // -------------------------------------------------------------------------
-  // Batching + cluster assignment
+  // Batching + assignment
 
   function flush() {
     clearTimeout(flushTimer);
@@ -296,7 +302,6 @@
           return;
         }
         if (resp.disabled) return;
-        if (resp.categories) categoryInfo = Object.assign(categoryInfo, resp.categories);
         const missing = []; // the model skipped these or cited a cluster that doesn't exist; retry
         for (const t of batch) {
           const a = resp.assigned && resp.assigned[t.id];
@@ -308,6 +313,10 @@
           }
         }
         if (resp.clusters) clusters = resp.clusters;
+        if (resp.slopAdded && resp.slopAdded.length) {
+          const have = new Set(slop.map((p) => p.id));
+          slop = resp.slopAdded.filter((p) => !have.has(p.id)).reverse().concat(slop);
+        }
         const wasAtBottom = listAtBottom();
         render();
         if (missing.length) failBatch(missing);
@@ -352,6 +361,45 @@
   }
 
   // -------------------------------------------------------------------------
+  // Labels
+
+  async function labelPost(post, label) {
+    const resp = await sendMessageAsync({ type: "SET_LABEL", id: post.id, label, author: post.author, text: post.text });
+    if (!resp || resp.error) {
+      console.warn("[clear-eyes] label failed:", resp && resp.error);
+      return;
+    }
+    seen.set(post.id, label === "slop" ? { slop: true } : { cluster: null });
+    if (ui) ui.postsCache.clear();
+    applyView(resp);
+    pollRule();
+  }
+
+  // The worker re-derives the rule after every label; watch for the update.
+  let rulePoll = null;
+  function pollRule() {
+    clearInterval(rulePoll);
+    const since = rule.derivedAt || 0;
+    let tries = 0;
+    rulePoll = setInterval(async () => {
+      tries++;
+      const r = await sendMessageAsync({ type: "GET_RULE" });
+      if (r && !r.error) {
+        rule = r;
+        renderRule();
+        if ((r.derivedAt || 0) > since || (!r.updating && tries > 2) || r.error) {
+          clearInterval(rulePoll);
+          rulePoll = null;
+        }
+      }
+      if (tries >= 30) {
+        clearInterval(rulePoll);
+        rulePoll = null;
+      }
+    }, 3000);
+  }
+
+  // -------------------------------------------------------------------------
   // Overlay lifecycle
 
   function syncView() {
@@ -360,16 +408,19 @@
     else if (!want && ui) unmount();
   }
 
-  const CE_BUILD = "b5"; // bump when content.js changes; shown as data-build on the overlay root
-
   function mount() {
     const root = el("div", "ce-root");
     root.id = "ce-root";
     root.dataset.build = CE_BUILD;
 
+    // Header
     const top = el("header", "ce-top");
     const brand = el("div", "ce-brand", "Clear Eyes");
     const stats = el("div", "ce-stats");
+    const leftToggle = el("button", "ce-btn ce-toggle", "Kept");
+    leftToggle.addEventListener("click", () => { ui.leftOpen = !ui.leftOpen; render(); });
+    const rightToggle = el("button", "ce-btn ce-toggle", "Slop");
+    rightToggle.addEventListener("click", () => { ui.rightOpen = !ui.rightOpen; render(); });
     const post = el("button", "ce-btn ce-btn-primary", "Post");
     post.title = "Write a post (n)";
     post.addEventListener("click", openCompose);
@@ -377,26 +428,50 @@
     reset.addEventListener("click", async () => {
       reset.disabled = true;
       await sendMessageAsync({ type: "RESET_CLUSTERS" });
-      clusters = [];
       seen.clear();
       retryCounts.clear();
       skipped.ads = skipped.noText = skipped.failed = 0;
-      render();
+      await refreshView();
       sweep();
       reset.disabled = false;
     });
-    top.append(brand, stats, post, reset);
+    top.append(brand, stats, leftToggle, rightToggle, post, reset);
+
+    // Rule band
+    const ruleBox = el("section", "ce-rule");
+    const ruleHead = el("div", "ce-rule-head");
+    const ruleText = el("div", "ce-rule-text");
+    ruleBox.append(ruleHead, ruleText);
 
     const notice = el("div", "ce-notice");
+
+    // Columns
+    const columns = el("div", "ce-columns");
+    const left = el("aside", "ce-side ce-side-left");
+    const leftHead = el("div", "ce-side-head");
+    const leftList = el("div", "ce-side-list");
+    left.append(leftHead, leftList);
+    const center = el("div", "ce-center");
     const list = el("main", "ce-list");
     const tail = el("section", "ce-tail");
     const tailHead = el("div", "ce-tail-head");
     const tailList = el("div", "ce-tail-list");
     tail.append(tailHead, tailList);
     const foot = el("footer", "ce-foot", "Scroll to pull more posts from your timeline");
+    center.append(list, foot);
+    const right = el("aside", "ce-side ce-side-right");
+    const rightHead = el("div", "ce-side-head");
+    const rightList = el("div", "ce-side-list");
+    right.append(rightHead, rightList);
+    columns.append(left, center, right);
 
-    root.append(top, notice, list, foot);
-    ui = { root, stats, notice, list, tail, tailHead, tailList, cards: new Map(), expanded: new Set(), pinned: new Set(), postsCache: new Map() };
+    root.append(top, ruleBox, notice, columns);
+    ui = {
+      root, stats, leftToggle, rightToggle, ruleBox, ruleHead, ruleText, notice, list, tail, tailHead, tailList,
+      left, leftHead, leftList, right, rightHead, rightList,
+      cards: new Map(), expanded: new Set(), pinned: new Set(), postsCache: new Map(),
+      leftOpen: window.innerWidth >= 1100, rightOpen: false // slop starts swept aside
+    };
     placeRoot();
     document.documentElement.classList.add("ce-active");
 
@@ -406,6 +481,19 @@
     window.addEventListener("keypress", swallowKey, true);
 
     render();
+  }
+
+  function unmount() {
+    if (!ui) return;
+    ui.root.removeEventListener("wheel", onWheel);
+    window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("keyup", swallowKey, true);
+    window.removeEventListener("keypress", swallowKey, true);
+    ui.root.remove();
+    document.documentElement.classList.remove("ce-active", "ce-composing");
+    wasComposing = false;
+    ui = null;
+    stopPump();
   }
 
   // The overlay lives in <body> (never <html>: X makes it the scroller and
@@ -427,19 +515,6 @@
     if (ui) ui.root.style.display = c ? "none" : "";
   }
 
-  function unmount() {
-    if (!ui) return;
-    ui.root.removeEventListener("wheel", onWheel);
-    window.removeEventListener("keydown", onKey, true);
-    window.removeEventListener("keyup", swallowKey, true);
-    window.removeEventListener("keypress", swallowKey, true);
-    ui.root.remove();
-    document.documentElement.classList.remove("ce-active", "ce-composing");
-    wasComposing = false;
-    ui = null;
-    stopPump();
-  }
-
   function el(tag, cls, text) {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -448,9 +523,9 @@
   }
 
   // -------------------------------------------------------------------------
-  // Scroll pump: wheel/keys on the overlay scroll the underlying X page so it
-  // fetches and mounts more tweets. Steps are kept under a viewport so X's
-  // virtualized list mounts every cell along the way (nothing gets skipped).
+  // Scroll pump: wheel/keys over the center column scroll the underlying X
+  // page so it fetches and mounts more tweets. Steps are kept under a viewport
+  // so X's virtualized list mounts every cell along the way.
 
   let pumpBudget = 0;
   let pumpTimer = null;
@@ -458,6 +533,8 @@
 
   function onWheel(e) {
     if (composing()) return;
+    // Sidebars and the rule band scroll themselves.
+    if (e.target.closest(".ce-side, .ce-rule")) return;
     e.preventDefault();
     const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * innerHeight : e.deltaY;
     requestScroll(dy);
@@ -474,7 +551,7 @@
     else if (k === "PageUp") requestScroll(-innerHeight * 0.8);
     else if (k === "End") requestScroll(innerHeight * 4);
     else if (k === "Home") ui.list.scrollTop = 0;
-    // Swallow everything so X's global shortcuts (n, /, etc.) can't fire underneath.
+    // Swallow everything so X's global shortcuts (/, etc.) can't fire underneath.
     e.stopImmediatePropagation();
     if (k === " " || k === "PageDown" || k === "PageUp") e.preventDefault();
   }
@@ -496,8 +573,7 @@
       list.scrollTop += dy;
       return;
     }
-    const atBottom = listAtBottom();
-    if (!atBottom) {
+    if (!listAtBottom()) {
       list.scrollTop += dy;
       return;
     }
@@ -538,34 +614,50 @@
   function render() {
     if (!ui) return;
     renderStats();
+    renderRule();
     renderNotice();
     renderClusters();
+    renderSides();
   }
 
   function renderStats() {
     if (!ui) return;
-    let assigned = 0;
-    for (const v of seen.values()) if (typeof v === "object") assigned++;
-    const parts = [`${assigned} posts`, `${clusters.length} clusters`];
-    if (inFlight > 0) parts.push(`${inFlight} classifying…`);
+    const posts = clusters.reduce((a, c) => a + c.count, 0);
+    const parts = [`${posts} posts`, `${clusters.length} clusters`, `${slop.length} slop`];
+    if (inFlight > 0) parts.push(`${inFlight} sorting…`);
     const sk = [];
     if (skipped.ads) sk.push(`${skipped.ads} ads`);
     if (skipped.noText) sk.push(`${skipped.noText} media-only`);
     if (skipped.failed) sk.push(`${skipped.failed} failed`);
     if (sk.length) parts.push("skipped " + sk.join(", "));
     ui.stats.textContent = parts.join(" · ");
+    ui.leftToggle.textContent = `Kept · ${kept.length}`;
+    ui.leftToggle.classList.toggle("ce-on", !!ui.leftOpen);
+    ui.rightToggle.textContent = `Slop · ${slop.length}`;
+    ui.rightToggle.classList.toggle("ce-on", !!ui.rightOpen);
+  }
+
+  function renderRule() {
+    if (!ui) return;
+    const n = (rule.nSlop || 0) + (rule.nOk || 0);
+    let head = rule.seed ? "Slop rule — seed (tag posts and it gets rewritten from your tags)" : `Slop rule — derived from your ${n} tag${n === 1 ? "" : "s"}`;
+    if (rule.updating) head += " · updating…";
+    if (rule.error) head += " · last update failed: " + rule.error;
+    ui.ruleHead.textContent = head;
+    ui.ruleText.textContent = rule.rule || "";
+    ui.ruleBox.classList.toggle("ce-rule-updating", !!rule.updating);
   }
 
   function renderNotice() {
     const n = ui.notice;
     n.innerHTML = "";
     if (!config.apiKey) {
-      n.append(el("span", null, "Add your Anthropic API key to start clustering. "));
+      n.append(el("span", null, "Add your Anthropic API key to start. "));
       const b = el("button", "ce-link", "Open options");
       b.addEventListener("click", () => sendMessageAsync({ type: "OPEN_OPTIONS" }));
       n.append(b);
       n.style.display = "";
-    } else if (clusters.length === 0 && inFlight === 0) {
+    } else if (clusters.length === 0 && slop.length === 0 && inFlight === 0) {
       n.textContent = "Waiting for posts… scroll to pull from your timeline.";
       n.style.display = "";
     } else {
@@ -615,9 +707,6 @@
     for (const c of tail) {
       const item = el("button", "ce-tail-item", c.title);
       item.title = c.summary || "";
-      const cat = Object.keys(c.categories || {})[0];
-      const info = cat && categoryInfo[cat];
-      if (info && info.action === "hide") item.dataset.noise = "1";
       // Clicking a one-off promotes it to an expanded card so its post can be read.
       item.addEventListener("click", () => {
         ui.pinned.add(c.id);
@@ -652,17 +741,30 @@
     const body = el("div", "ce-body");
     const title = el("h2", "ce-title");
     const summary = el("p", "ce-summary");
-    const cats = el("div", "ce-cats");
-    const tag = el("span", "ce-noise-tag", "mostly noise");
     const posts = el("div", "ce-posts");
-    body.append(title, summary, cats, posts);
-    card.append(count, body, tag);
+    body.append(title, summary, posts);
+    card.append(count, body);
     card.addEventListener("click", (e) => {
       if (e.target.closest("a, button, .ce-posts")) return; // links and the post list handle themselves
       toggleExpanded(c.id);
     });
     updateCard(card, c, true);
     return card;
+  }
+
+  function updateCard(card, c, initial) {
+    const countEl = card.querySelector(".ce-count");
+    const prev = Number(countEl.textContent) || 0;
+    if (!initial && c.count !== prev) {
+      countEl.dataset.delta = c.count > prev ? "+" + (c.count - prev) : "";
+      card.classList.remove("ce-bump");
+      void card.offsetWidth; // restart animation
+      card.classList.add("ce-bump");
+    }
+    countEl.textContent = String(c.count);
+    card.querySelector(".ce-title").textContent = c.title;
+    card.querySelector(".ce-summary").textContent = c.summary;
+    renderPosts(card, c);
   }
 
   // -------------------------------------------------------------------------
@@ -693,6 +795,7 @@
     const box = card.querySelector(".ce-posts");
     if (!ui.expanded.has(c.id)) {
       box.innerHTML = "";
+      delete box.dataset.count;
       card.classList.remove("ce-expanded");
       return;
     }
@@ -707,54 +810,61 @@
       box.append(el("div", "ce-post-loading", "No stored posts for this cluster (they were clustered before this session started)."));
       return;
     }
-    for (const p of posts) {
-      const row = el("article", "ce-post");
-      const info = categoryInfo[p.category] || { label: p.category, action: "keep" };
-      if (info.action === "hide") row.dataset.noise = "1";
-      const head = el("div", "ce-post-head");
-      const who = el("a", "ce-post-author", p.author ? "@" + p.author : "post");
-      who.href = p.author ? `https://x.com/${p.author}` : `https://x.com/i/web/status/${p.id}`;
-      who.target = "_blank";
-      who.rel = "noopener";
-      const chip = el("span", "ce-cat", info.label);
-      chip.dataset.action = info.action;
-      const open = el("a", "ce-post-open", "open on X ↗");
-      open.href = p.author ? `https://x.com/${p.author}/status/${p.id}` : `https://x.com/i/web/status/${p.id}`;
-      open.target = "_blank";
-      open.rel = "noopener";
-      head.append(who, chip, open);
-      const text = el("div", "ce-post-text", p.text);
-      row.append(head, text);
-      box.append(row);
-    }
+    for (const p of posts) box.append(buildPostRow(p, "slop"));
   }
 
-  function updateCard(card, c, initial) {
-    const countEl = card.querySelector(".ce-count");
-    const prev = Number(countEl.textContent) || 0;
-    if (!initial && c.count !== prev) {
-      countEl.dataset.delta = c.count > prev ? "+" + (c.count - prev) : "";
-      card.classList.remove("ce-bump");
-      void card.offsetWidth; // restart animation
-      card.classList.add("ce-bump");
-    }
-    countEl.textContent = String(c.count);
-    card.querySelector(".ce-title").textContent = c.title;
-    card.querySelector(".ce-summary").textContent = c.summary;
+  // A post row: author, text, open-on-X, and the tag button ("slop" or "ok").
+  function buildPostRow(p, action) {
+    const row = el("article", "ce-post");
+    row.dataset.id = p.id;
+    const head = el("div", "ce-post-head");
+    const who = el("a", "ce-post-author", p.author ? "@" + p.author : "post");
+    who.href = p.author ? `https://x.com/${p.author}` : `https://x.com/i/web/status/${p.id}`;
+    who.target = "_blank";
+    who.rel = "noopener";
+    const open = el("a", "ce-post-open", "open ↗");
+    open.href = p.author ? `https://x.com/${p.author}/status/${p.id}` : `https://x.com/i/web/status/${p.id}`;
+    open.target = "_blank";
+    open.rel = "noopener";
+    const tag = el("button", "ce-tag ce-tag-" + action, action === "slop" ? "slop" : "not slop");
+    tag.title = action === "slop" ? "Tag as slop: sweeps it into the slop sidebar and teaches the rule" : "Tag as not slop: rescues it and teaches the rule";
+    tag.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      tag.disabled = true;
+      row.classList.add("ce-post-leaving");
+      await labelPost(p, action === "slop" ? "slop" : "ok");
+    });
+    if (p.source === "user") row.dataset.user = "1";
+    head.append(who, open, tag);
+    const text = el("div", "ce-post-text", p.text);
+    row.append(head, text);
+    return row;
+  }
 
-    const cats = card.querySelector(".ce-cats");
-    cats.innerHTML = "";
-    let hidden = 0;
-    const entries = Object.entries(c.categories || {}).sort((a, b) => b[1] - a[1]);
-    for (const [id, n] of entries) {
-      const info = categoryInfo[id] || { label: id, action: "keep" };
-      if (info.action === "hide") hidden += n;
-      const chip = el("span", "ce-cat", `${info.label} ${n}`);
-      chip.dataset.action = info.action;
-      cats.append(chip);
+  function renderSides() {
+    const L = ui.left, R = ui.right;
+    L.classList.toggle("ce-collapsed", !ui.leftOpen);
+    R.classList.toggle("ce-collapsed", !ui.rightOpen);
+    ui.leftHead.textContent = ui.leftOpen ? `Kept · ${kept.length} — posts you tagged not slop` : `Kept · ${kept.length}`;
+    ui.rightHead.textContent = ui.rightOpen ? `Slop · ${slop.length} — swept aside; tag anything worth keeping` : `Slop · ${slop.length}`;
+    ui.leftHead.onclick = () => { ui.leftOpen = !ui.leftOpen; render(); };
+    ui.rightHead.onclick = () => { ui.rightOpen = !ui.rightOpen; render(); };
+
+    fillSide(ui.leftList, ui.leftOpen ? kept : [], "slop", "Nothing kept yet. Open a cluster and tag posts, or rescue something from the slop sidebar.");
+    fillSide(ui.rightList, ui.rightOpen ? slop : [], "ok", "No slop yet.");
+  }
+
+  function fillSide(listEl, posts, action, emptyText) {
+    // Rebuild only when the id sequence changed (keeps scroll position otherwise).
+    const key = posts.map((p) => p.id).join(",");
+    if (listEl.dataset.key === key && listEl.children.length) return;
+    listEl.dataset.key = key;
+    listEl.innerHTML = "";
+    if (posts.length === 0) {
+      if (listEl.parentElement && !listEl.parentElement.classList.contains("ce-collapsed")) listEl.append(el("div", "ce-post-loading", emptyText));
+      return;
     }
-    card.dataset.noise = c.count > 0 && hidden / c.count > 0.5 ? "1" : "";
-    renderPosts(card, c);
+    for (const p of posts) listEl.append(buildPostRow(p, action));
   }
 
   // -------------------------------------------------------------------------
