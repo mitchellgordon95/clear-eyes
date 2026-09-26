@@ -318,7 +318,9 @@
     const foot = el("footer", "ce-foot", "Scroll to pull more posts from your timeline");
 
     root.append(top, notice, list, foot);
-    document.documentElement.appendChild(root);
+    // Must live in <body>: X makes <html> the scroller, and a fixed element
+    // attached directly to <html> gets offset by the scroll position.
+    document.body.appendChild(root);
     document.documentElement.classList.add("ce-active");
 
     root.addEventListener("wheel", onWheel, { passive: false });

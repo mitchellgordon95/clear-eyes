@@ -16,11 +16,14 @@
   --ce-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
+/* Don't lock overflow: a hidden-overflow root can't be scrolled even by
+   script, and the pump relies on window.scrollBy. The overlay swallows wheel
+   and key input itself; just hide the page scrollbar. */
 html.ce-active {
-  overflow: hidden !important; /* the overlay owns the wheel; X scrolls via script only */
+  scrollbar-width: none;
 }
-html.ce-active body {
-  overflow: hidden !important;
+html.ce-active::-webkit-scrollbar {
+  display: none;
 }
 
 #ce-root {
