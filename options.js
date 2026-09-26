@@ -11,6 +11,11 @@ async function init() {
   $("enabled").checked = cfg.enabled;
   $("homeOnly").checked = cfg.homeOnly !== false;
   $("hideAds").checked = cfg.hideAds !== false;
+  $("devBridge").checked = cfg.devBridge !== false;
+  $("clusterPrompt").value = cfg.clusterPrompt || "";
+  chrome.runtime.sendMessage({ type: "GET_TUNING" }, (t) => {
+    if (t && t.defaultClusterPrompt) $("clusterPrompt").placeholder = t.defaultClusterPrompt;
+  });
   categories = JSON.parse(JSON.stringify(cfg.categories));
   renderCats();
 
@@ -117,6 +122,8 @@ async function save() {
   delete cfg.noTextAction;
   delete cfg.showLabels;
   cfg.hideAds = $("hideAds").checked;
+  cfg.devBridge = $("devBridge").checked;
+  cfg.clusterPrompt = $("clusterPrompt").value.trim();
   cfg.categories = cleaned;
   await ceSaveConfig(cfg);
   categories = cleaned;

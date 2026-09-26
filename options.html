@@ -83,6 +83,11 @@
   <div class="row"><input type="checkbox" id="homeOnly" /><label for="homeOnly" style="margin:0">Only take over the Home timeline (profiles, search, and threads show X as-is)</label></div>
   <div class="row"><input type="checkbox" id="hideAds" /><label for="hideAds" style="margin:0">Skip ads / promoted posts (detected locally, never sent to the API)</label></div>
   <p class="hint">Media-only posts (no text) are always skipped — there's nothing to cluster.</p>
+  <div class="row"><input type="checkbox" id="devBridge" /><label for="devBridge" style="margin:0">Developer bridge: let page scripts on x.com send tuning commands (reset, set prompt/model, reload). Turn off when not iterating.</label></div>
+
+  <h2>Clustering prompt</h2>
+  <p class="hint">The clustering half of the system prompt (categories are appended automatically). Leave blank to use the built-in default, shown as the placeholder.</p>
+  <textarea id="clusterPrompt" rows="10" style="font-size:13px"></textarea>
 
   <h2>Categories</h2>
   <p class="hint">Every post gets exactly one quality category alongside its cluster. Cluster cards show the breakdown; clusters that are mostly <b>hide</b> categories are dimmed as noise. Edit descriptions freely — they are the prompt.</p>

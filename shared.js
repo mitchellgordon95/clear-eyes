@@ -67,6 +67,8 @@ const CE_DEFAULT_CONFIG = {
   homeOnly: true, // only take over the Home timeline (/home); other pages show X as-is
   hideAds: true, // skip promoted tweets (detected locally, never sent to the API)
   repairModel: "claude-opus-5", // latest Opus alias; used only for selector self-repair
+  clusterPrompt: "", // override for the clustering guidance section of the system prompt ("" = built-in default)
+  devBridge: true, // let page scripts on x.com send whitelisted commands (reset, set prompt/model, reload) — used for automated tuning
   selectors: CE_DEFAULT_SELECTORS,
   categories: CE_DEFAULT_CATEGORIES
 };

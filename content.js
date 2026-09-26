@@ -69,6 +69,50 @@
     sweep();
 
     setTimeout(healthCheck, HEALTH_CHECK_AFTER_MS);
+    installDevBridge();
+  }
+
+  // -------------------------------------------------------------------------
+  // Dev bridge: lets a page script (e.g. an automated tuning session driving
+  // the browser) send a whitelisted set of commands to the worker via
+  // window.postMessage. The API key never crosses this boundary. Off via the
+  // "developer bridge" option.
+  //
+  //   window.postMessage({ type: "ce-dev", id: 1, msg: { type: "GET_TUNING" } }, "*")
+  //   → window "message" event { type: "ce-dev-resp", id: 1, resp: {...} }
+  //   Local commands: { type: "ce-dev", id, local: "pause" | "resume" | "state" }
+
+  const BRIDGE_ALLOWED = new Set([
+    "GET_TUNING", "SET_TUNING", "GET_CLUSTERS", "RESET_CLUSTERS", "CLUSTER_BATCH", "RELOAD_EXTENSION", "GET_STATUS"
+  ]);
+  let ingestPaused = false;
+
+  function installDevBridge() {
+    window.addEventListener("message", async (e) => {
+      if (e.source !== window || !e.data || e.data.type !== "ce-dev") return;
+      if (config.devBridge === false) return;
+      const { id, msg, local } = e.data;
+      let resp;
+      if (local === "pause") { ingestPaused = true; resp = { ok: true, paused: true }; }
+      else if (local === "resume") { ingestPaused = false; resp = { ok: true, paused: false }; sweep(); }
+      else if (local === "state") {
+        resp = { paused: ingestPaused, seen: seen.size, inFlight, skipped, clusters, queued: queue.length };
+      } else if (local === "refresh") {
+        const r = await sendMessageAsync({ type: "GET_CLUSTERS" });
+        if (r && r.clusters) { clusters = r.clusters; if (r.categories) categoryInfo = Object.assign(categoryInfo, r.categories); render(); }
+        resp = { ok: true };
+      } else if (msg && BRIDGE_ALLOWED.has(msg.type)) {
+        resp = await sendMessageAsync(msg);
+        if (msg.type === "RESET_CLUSTERS" && resp && resp.ok) {
+          clusters = []; seen.clear(); retryCounts.clear();
+          skipped.ads = skipped.noText = skipped.failed = 0;
+          render();
+        }
+      } else {
+        resp = { error: "not allowed" };
+      }
+      window.postMessage({ type: "ce-dev-resp", id, resp }, "*");
+    });
   }
 
   function buildLocalCategoryInfo() {
@@ -127,7 +171,7 @@
     syncView(); // X is an SPA: the path can change without a reload
     const articles = document.querySelectorAll(S.tweet);
     if (articles.length > 0) everSawTweet = true;
-    if (!viewActive()) return;
+    if (!viewActive() || ingestPaused) return;
 
     let changed = false;
     for (const article of articles) {
