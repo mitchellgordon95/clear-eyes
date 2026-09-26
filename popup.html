@@ -36,17 +36,18 @@
 <body>
   <h1>Clear Eyes</h1>
   <div class="row">
-    <span>Filtering</span>
+    <span>Cluster view</span>
     <label class="switch"><input type="checkbox" id="enabled" /><span class="slider"></span></label>
   </div>
-  <div class="row"><span class="muted">Tweets classified</span><b id="classified">–</b></div>
-  <div class="row"><span class="muted">Hidden</span><b id="hidden">–</b></div>
+  <div class="row"><span class="muted">Posts clustered</span><b id="classified">–</b></div>
+  <div class="row"><span class="muted">Clusters</span><b id="clusters">–</b></div>
   <div class="row"><span class="muted">API calls</span><b id="apiCalls">–</b></div>
   <div class="warn" id="noKey">No API key set. <a href="#" id="openOptions2">Add one in options.</a></div>
-  <div class="warn" id="healthWarn">Tweet selectors found nothing on your Home timeline — X may have changed their markup. Filtering is failing open (everything shows). Visit x.com/home and use the repair banner to let Claude fix the selectors.</div>
+  <div class="warn" id="healthWarn">Tweet selectors found nothing on your Home timeline — X may have changed their markup. Visit x.com/home and use the repair banner to let Claude fix the selectors.</div>
   <div class="warn" id="lastError"></div>
   <div class="row" style="margin-top:12px">
     <a href="#" id="openOptions">Options</a>
+    <a href="#" id="resetClusters">reset clusters</a>
     <a href="#" id="resetStats">reset stats</a>
   </div>
   <script src="popup.js"></script>

@@ -9,9 +9,7 @@ async function init() {
   $("apiKey").value = cfg.apiKey || "";
   $("model").value = cfg.model;
   $("enabled").checked = cfg.enabled;
-  $("homeOnly").checked = cfg.homeOnly;
-  $("hideNoText").checked = (cfg.noTextAction || "hide") === "hide";
-  $("showLabels").checked = cfg.showLabels !== false;
+  $("homeOnly").checked = cfg.homeOnly !== false;
   $("hideAds").checked = cfg.hideAds !== false;
   categories = JSON.parse(JSON.stringify(cfg.categories));
   renderCats();
@@ -115,9 +113,9 @@ async function save() {
   cfg.model = $("model").value.trim() || "claude-haiku-4-5";
   cfg.enabled = $("enabled").checked;
   cfg.homeOnly = $("homeOnly").checked;
-  cfg.noTextAction = $("hideNoText").checked ? "hide" : "keep";
   delete cfg.skipNoText;
-  cfg.showLabels = $("showLabels").checked;
+  delete cfg.noTextAction;
+  delete cfg.showLabels;
   cfg.hideAds = $("hideAds").checked;
   cfg.categories = cleaned;
   await ceSaveConfig(cfg);

@@ -58,7 +58,7 @@
 </head>
 <body>
   <h1>Clear Eyes</h1>
-  <p>Every tweet on your Home timeline is classified by Claude before it renders. Categories marked <b>hide</b> collapse into a one-line placeholder you can reopen.</p>
+  <p>Clear Eyes replaces your Home timeline with a cluster view. Every post is grouped by topic and classified by Claude; you see cluster titles, summaries, and counts — never the raw posts. Scroll to pull more posts in.</p>
 
   <h2>API</h2>
   <label for="apiKey">Anthropic API key</label>
@@ -71,7 +71,7 @@
     <option value="claude-haiku-4-5">fast + cheapest — recommended</option>
     <option value="claude-sonnet-5">smarter, ~3x cost</option>
   </datalist>
-  <div class="hint">claude-haiku-4-5 is plenty for this. Any Anthropic model ID works.</div>
+  <div class="hint">claude-haiku-4-5 is fast and cheap; claude-sonnet-5 clusters more coherently. Any Anthropic model ID works.</div>
 
   <div class="row" style="margin-top:14px">
     <button class="secondary" id="testKey">Test key</button>
@@ -79,14 +79,13 @@
   </div>
 
   <h2>Behavior</h2>
-  <div class="row"><input type="checkbox" id="enabled" /><label for="enabled" style="margin:0">Enabled</label></div>
-  <div class="row"><input type="checkbox" id="homeOnly" /><label for="homeOnly" style="margin:0">Filter only the Home timeline (leave profiles, search, and threads alone)</label></div>
-  <div class="row"><input type="checkbox" id="hideNoText" /><label for="hideNoText" style="margin:0">Hide media-only tweets (no text — can't be classified)</label></div>
-  <div class="row"><input type="checkbox" id="showLabels" /><label for="showLabels" style="margin:0">Show a category pill on every tweet (useful for judging/tuning the classifier)</label></div>
-  <div class="row"><input type="checkbox" id="hideAds" /><label for="hideAds" style="margin:0">Hide ads / promoted tweets (detected locally, no API call)</label></div>
+  <div class="row"><input type="checkbox" id="enabled" /><label for="enabled" style="margin:0">Enabled (off = normal X)</label></div>
+  <div class="row"><input type="checkbox" id="homeOnly" /><label for="homeOnly" style="margin:0">Only take over the Home timeline (profiles, search, and threads show X as-is)</label></div>
+  <div class="row"><input type="checkbox" id="hideAds" /><label for="hideAds" style="margin:0">Skip ads / promoted posts (detected locally, never sent to the API)</label></div>
+  <p class="hint">Media-only posts (no text) are always skipped — there's nothing to cluster.</p>
 
   <h2>Categories</h2>
-  <p class="hint">The model must place every tweet into exactly one category. Keep = shown, Hide = collapsed. Edit descriptions freely — they are the prompt.</p>
+  <p class="hint">Every post gets exactly one quality category alongside its cluster. Cluster cards show the breakdown; clusters that are mostly <b>hide</b> categories are dimmed as noise. Edit descriptions freely — they are the prompt.</p>
   <div id="cats"></div>
   <button class="secondary" id="addCat">+ Add category</button>
   <button class="secondary" id="resetCats">Reset categories to defaults</button>

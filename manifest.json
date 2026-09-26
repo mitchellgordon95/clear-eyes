@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Clear Eyes — AI feed filter for X",
-  "version": "0.2.0",
-  "description": "Filters your X feed with Claude before it renders. Keeps substance; hides slop, rage bait, and drama. Bring your own API key.",
+  "name": "Clear Eyes — AI cluster view for X",
+  "version": "0.3.0",
+  "description": "Replaces your X feed with topic clusters built by Claude. See what people are talking about, never the raw posts. Bring your own key.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",

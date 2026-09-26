@@ -1,6 +1,10 @@
-// Content script: veils tweets the moment they enter the DOM, batches them,
-// asks the background worker for verdicts, then reveals or collapses each one.
-// Fails open: any error (no key, API failure, weird DOM) reveals the tweet.
+// Content script: replaces X's Home timeline with a cluster view.
+//
+// X's own page keeps running underneath (it is what fetches tweets). We cover
+// it with an opaque overlay, ingest every tweet X mounts into the DOM, ask the
+// background worker to cluster + classify each batch, and render only the
+// clusters. Raw tweets are never displayed. Scrolling the overlay drives X's
+// infinite scroll so more tweets keep arriving and cluster counts grow.
 
 (() => {
   const BATCH_MAX = 20;
@@ -9,16 +13,24 @@
   const RETRY_DELAY_MS = 4000;
   const SWEEP_INTERVAL_MS = 1500;
   const HEALTH_CHECK_AFTER_MS = 12000;
+  const PUMP_TICK_MS = 120; // how often the underlying page is nudged
+  const PUMP_STALL_MS = 5000; // give up on a scroll request if X stops loading
+  const WHEEL_GAIN = 3; // px of underlying scroll per px of wheel delta
 
   let config = null;
   let S = null; // active selectors (config.selectors; rewritten by self-repair)
-  let queue = []; // [{id, author, text, articles: [el]}]
+  let queue = []; // [{id, author, text}]
   let queuedIds = new Set();
   let flushTimer = null;
   let everSawTweet = false;
-  const verdictCache = new Map(); // id -> category (page-lifetime memo)
-  const retryCounts = new Map(); // id -> failed classification attempts
+  const seen = new Map(); // tweetId -> {cluster, category} | "pending" | "failed" | "ad" | "notext"
+  const retryCounts = new Map(); // tweetId -> failed attempts
+  let parked = []; // tweets waiting for an API key
+  let inFlight = 0; // tweets currently being classified
+  const skipped = { ads: 0, noText: 0, failed: 0 };
+  let clusters = []; // [{id, title, summary, count, categories, createdAt, updatedAt}]
   let categoryInfo = {}; // id -> {label, action}
+  let ui = null; // mounted overlay elements, or null
 
   init();
 
@@ -29,20 +41,31 @@
     buildLocalCategoryInfo();
 
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === "local" && changes.config) {
-        config = Object.assign({}, config, changes.config.newValue || {});
-        if (config.selectors) S = config.selectors;
-        buildLocalCategoryInfo();
-        if (!config.enabled) revealEverything();
-        if (config.showLabels === false) {
-          for (const article of document.querySelectorAll(S.tweet)) clearLabel(article);
-        }
+      if (area !== "local" || !changes.config) return;
+      const hadKey = !!config.apiKey;
+      config = Object.assign({}, config, changes.config.newValue || {});
+      if (config.selectors) S = config.selectors;
+      buildLocalCategoryInfo();
+      syncView();
+      if (!hadKey && config.apiKey && parked.length > 0) {
+        const p = parked;
+        parked = [];
+        for (const t of p) enqueue(t);
+        flush();
       }
+      render();
     });
+
+    const resp = await sendMessageAsync({ type: "GET_CLUSTERS" });
+    if (resp && resp.clusters) {
+      clusters = resp.clusters;
+      if (resp.categories) categoryInfo = Object.assign(categoryInfo, resp.categories);
+    }
 
     const observer = new MutationObserver(() => scheduleSweep());
     observer.observe(document.body, { childList: true, subtree: true });
     setInterval(sweep, SWEEP_INTERVAL_MS);
+    syncView();
     sweep();
 
     setTimeout(healthCheck, HEALTH_CHECK_AFTER_MS);
@@ -68,8 +91,21 @@
     });
   }
 
+  function sendMessageAsync(msg) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(msg, (resp) => {
+          if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
+          else resolve(resp);
+        });
+      } catch (e) {
+        resolve({ error: String(e) });
+      }
+    });
+  }
+
   // -------------------------------------------------------------------------
-  // Scanning
+  // Scanning X's DOM (underneath the overlay)
 
   let sweepScheduled = false;
   function scheduleSweep() {
@@ -81,41 +117,53 @@
     });
   }
 
-  function filteringActive() {
+  function viewActive() {
     if (!config || !config.enabled) return false;
-    if (config.homeOnly && location.pathname !== "/home") return false;
+    if (config.homeOnly !== false && location.pathname !== "/home") return false;
     return true;
   }
 
   function sweep() {
+    syncView(); // X is an SPA: the path can change without a reload
     const articles = document.querySelectorAll(S.tweet);
     if (articles.length > 0) everSawTweet = true;
-    if (!filteringActive()) return;
+    if (!viewActive()) return;
 
+    let changed = false;
     for (const article of articles) {
       const id = extractTweetId(article);
-      if (!id) {
-        // Promoted tweets sometimes lack a status link; still catch them.
-        if (config.hideAds !== false && !article.dataset.ceAdChecked) {
-          article.dataset.ceAdChecked = "1";
-          if (isAd(article)) hideTweet(article, null, "ad", "Ad");
-        }
+      if (!id) continue;
+      if (seen.has(id)) continue;
+
+      if (config.hideAds !== false && isAd(article)) {
+        seen.set(id, "ad");
+        skipped.ads++;
+        changed = true;
         continue;
       }
-
-      // X virtualizes the timeline and can recycle DOM nodes: if the node's
-      // recorded id no longer matches its content, reset and reprocess.
-      if (article.dataset.ceId && article.dataset.ceId !== id) {
-        resetArticle(article);
-      }
-      if (article.dataset.ceId === id) {
-        ensurePill(article); // re-add if a React re-render dropped it
+      const text = extractText(article);
+      if (!text) {
+        seen.set(id, "notext");
+        skipped.noText++;
+        changed = true;
         continue;
       }
-
-      article.dataset.ceId = id;
-      processTweet(article, id);
+      seen.set(id, "pending");
+      enqueue({ id, author: extractAuthor(article), text: text.slice(0, 2000) });
+      changed = true;
     }
+    if (queue.length >= BATCH_MAX) flush();
+    else if (queue.length > 0) {
+      clearTimeout(flushTimer);
+      flushTimer = setTimeout(flush, BATCH_DEBOUNCE_MS);
+    }
+    if (changed) renderStats();
+  }
+
+  function enqueue(t) {
+    if (queuedIds.has(t.id)) return;
+    queuedIds.add(t.id);
+    queue.push(t);
   }
 
   function extractTweetId(article) {
@@ -147,51 +195,14 @@
       if (span.children.length > 0) continue;
       const t = span.textContent.trim();
       if (t !== "Ad" && t !== "Promoted") continue;
-      if (span.closest(S.tweetText)) continue; // tweet body, not the marker
+      if (span.closest(S.tweetText)) continue;
       return true;
     }
     return false;
   }
 
-  function processTweet(article, id) {
-    // Ads: detected from the DOM, hidden instantly, never sent to the API.
-    if (config.hideAds !== false && isAd(article)) {
-      hideTweet(article, id, "ad", "Ad");
-      return;
-    }
-
-    // Known verdict (scrolled past before) — apply instantly, no veil flash.
-    if (verdictCache.has(id)) {
-      applyVerdict(article, id, verdictCache.get(id));
-      return;
-    }
-
-    const text = extractText(article);
-    if (!text) {
-      if ((config.noTextAction || "hide") === "hide") {
-        hideTweet(article, id, "notext", "no text");
-      } else {
-        markKept(article);
-        setLabel(article, "no text", "skip");
-      }
-      return;
-    }
-
-    veil(article);
-
-    if (!queuedIds.has(id)) {
-      queuedIds.add(id);
-      queue.push({ id, author: extractAuthor(article), text: text.slice(0, 2000) });
-    }
-    if (queue.length >= BATCH_MAX) flush();
-    else {
-      clearTimeout(flushTimer);
-      flushTimer = setTimeout(flush, BATCH_DEBOUNCE_MS);
-    }
-  }
-
   // -------------------------------------------------------------------------
-  // Batching + verdicts
+  // Batching + cluster assignment
 
   function flush() {
     clearTimeout(flushTimer);
@@ -199,201 +210,346 @@
     const batch = queue;
     queue = [];
     queuedIds = new Set();
+    inFlight += batch.length;
+    renderStats();
 
     let responded = false;
+    const done = () => {
+      if (responded) return false;
+      responded = true;
+      inFlight -= batch.length;
+      renderStats();
+      return true;
+    };
+
     try {
-      chrome.runtime.sendMessage({ type: "CLASSIFY_BATCH", tweets: batch }, (resp) => {
-        responded = true;
+      chrome.runtime.sendMessage({ type: "CLUSTER_BATCH", tweets: batch }, (resp) => {
+        if (!done()) return;
         if (chrome.runtime.lastError || !resp || resp.error) {
+          if (resp && resp.needsKey) {
+            parked.push(...batch);
+            render();
+            return;
+          }
           if (resp && resp.error) console.warn("[clear-eyes]", resp.error);
           failBatch(batch);
           return;
         }
-        if (resp.disabled) {
-          for (const t of batch) for (const a of findArticles(t.id)) unveil(a);
-          return;
-        }
+        if (resp.disabled) return;
         if (resp.categories) categoryInfo = Object.assign(categoryInfo, resp.categories);
         for (const t of batch) {
-          const category = resp.verdicts[t.id];
-          if (category) {
-            verdictCache.set(t.id, category);
+          const a = resp.assigned && resp.assigned[t.id];
+          if (a) {
+            seen.set(t.id, a);
             retryCounts.delete(t.id);
+          } else {
+            seen.set(t.id, "failed");
+            skipped.failed++;
           }
-          applyVerdictById(t.id, category);
         }
+        if (resp.clusters) clusters = resp.clusters;
+        render();
       });
     } catch (_) {
-      failBatch(batch);
+      if (done()) failBatch(batch);
     }
     // Safety valve: if the worker never answers, treat as a failed attempt.
     setTimeout(() => {
-      if (!responded) failBatch(batch);
-    }, 20000);
+      if (done()) failBatch(batch);
+    }, 30000);
   }
 
-  // A batch failed to classify: unveil immediately (fail open), retry quietly
-  // in the background, and only mark tweets "not classified" once retries
-  // are exhausted.
   function failBatch(batch) {
     const toRetry = [];
     for (const t of batch) {
-      if (verdictCache.has(t.id)) continue; // a retry already succeeded
+      const cur = seen.get(t.id);
+      if (cur && typeof cur === "object") continue; // a retry already succeeded
       const attempts = (retryCounts.get(t.id) || 0) + 1;
       retryCounts.set(t.id, attempts);
-      for (const article of findArticles(t.id)) unveil(article);
-      if (attempts < MAX_ATTEMPTS) {
-        toRetry.push(t);
-      } else {
-        for (const article of findArticles(t.id)) {
-          setLabel(article, "not classified", "error");
-        }
+      if (attempts < MAX_ATTEMPTS) toRetry.push(t);
+      else {
+        seen.set(t.id, "failed");
+        skipped.failed++;
       }
     }
+    renderStats();
     if (toRetry.length > 0) {
       setTimeout(() => {
         for (const t of toRetry) {
-          if (verdictCache.has(t.id) || queuedIds.has(t.id)) continue;
-          queuedIds.add(t.id);
-          queue.push(t);
+          if (seen.get(t.id) === "pending") enqueue(t);
         }
         if (queue.length > 0) flush();
       }, RETRY_DELAY_MS * (retryCounts.get(toRetry[0].id) || 1));
     }
   }
 
-  function findArticles(id) {
-    return document.querySelectorAll(`${S.tweet}[data-ce-id="${id}"]`);
+  // -------------------------------------------------------------------------
+  // Overlay lifecycle
+
+  function syncView() {
+    const want = viewActive();
+    if (want && !ui) mount();
+    else if (!want && ui) unmount();
   }
 
-  function applyVerdictById(id, category) {
-    for (const article of findArticles(id)) applyVerdict(article, id, category);
+  function mount() {
+    const root = el("div", "ce-root");
+    root.id = "ce-root";
+
+    const top = el("header", "ce-top");
+    const brand = el("div", "ce-brand", "Clear Eyes");
+    const stats = el("div", "ce-stats");
+    const reset = el("button", "ce-btn", "Reset clusters");
+    reset.addEventListener("click", async () => {
+      reset.disabled = true;
+      await sendMessageAsync({ type: "RESET_CLUSTERS" });
+      clusters = [];
+      seen.clear();
+      retryCounts.clear();
+      skipped.ads = skipped.noText = skipped.failed = 0;
+      render();
+      sweep();
+      reset.disabled = false;
+    });
+    top.append(brand, stats, reset);
+
+    const notice = el("div", "ce-notice");
+    const list = el("main", "ce-list");
+    const foot = el("footer", "ce-foot", "Scroll to pull more posts from your timeline");
+
+    root.append(top, notice, list, foot);
+    document.documentElement.appendChild(root);
+    document.documentElement.classList.add("ce-active");
+
+    root.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", swallowKey, true);
+    window.addEventListener("keypress", swallowKey, true);
+
+    ui = { root, stats, notice, list, cards: new Map() };
+    render();
   }
 
-  function applyVerdict(article, id, category) {
-    const info = categoryInfo[category];
-    if (!category || !info) {
-      markKept(article);
-      setLabel(article, "not classified", "error");
-      return;
-    }
-    if (info.action !== "hide") {
-      markKept(article);
-      setLabel(article, info.label || category, "keep");
-      return;
-    }
-    hideTweet(article, id, category, info.label);
+  function unmount() {
+    if (!ui) return;
+    ui.root.removeEventListener("wheel", onWheel);
+    window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("keyup", swallowKey, true);
+    window.removeEventListener("keypress", swallowKey, true);
+    ui.root.remove();
+    document.documentElement.classList.remove("ce-active");
+    ui = null;
+    stopPump();
+  }
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
   }
 
   // -------------------------------------------------------------------------
-  // DOM manipulation
+  // Scroll pump: wheel/keys on the overlay scroll the underlying X page so it
+  // fetches and mounts more tweets. Steps are kept under a viewport so X's
+  // virtualized list mounts every cell along the way (nothing gets skipped).
 
-  function setLabel(article, text, kind) {
-    if (config.showLabels === false) return;
-    article.dataset.ceLabel = text;
-    article.dataset.ceKind = kind;
-    insertPill(article);
+  let pumpBudget = 0;
+  let pumpTimer = null;
+  let stallSince = 0;
+
+  function onWheel(e) {
+    e.preventDefault();
+    const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * innerHeight : e.deltaY;
+    requestScroll(dy);
   }
 
-  function insertPill(article) {
-    const old = article.querySelector(".ce-pill");
-    if (old) old.remove();
-    delete article.dataset.cePillFallback;
+  function onKey(e) {
+    if (!ui) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key;
+    if (k === "ArrowDown" || k === "j") requestScroll(80);
+    else if (k === "ArrowUp" || k === "k") requestScroll(-80);
+    else if (k === "PageDown" || k === " ") requestScroll(innerHeight * 0.8);
+    else if (k === "PageUp") requestScroll(-innerHeight * 0.8);
+    else if (k === "End") requestScroll(innerHeight * 4);
+    else if (k === "Home") ui.list.scrollTop = 0;
+    // Swallow everything so X's global shortcuts (n, /, etc.) can't fire underneath.
+    e.stopImmediatePropagation();
+    if (k === " " || k === "PageDown" || k === "PageUp") e.preventDefault();
+  }
 
-    // Anchor next to the tweet's top-right controls (Grok button + "..." menu):
-    // insert just before the caret button so the pill sits beside them.
-    const caret = article.querySelector(S.caret);
-    if (!caret || !caret.parentNode) {
-      article.dataset.cePillFallback = "1"; // CSS pseudo-element fallback
+  function swallowKey(e) {
+    if (ui) e.stopImmediatePropagation();
+  }
+
+  function requestScroll(dy) {
+    if (!ui) return;
+    const list = ui.list;
+    if (dy < 0) {
+      list.scrollTop += dy;
       return;
     }
-    const pill = document.createElement("span");
-    pill.className = "ce-pill";
-    pill.dataset.kind = article.dataset.ceKind || "keep";
-    pill.textContent = article.dataset.ceLabel || "";
-    caret.parentNode.insertBefore(pill, caret);
-  }
-
-  // X's React re-renders can silently drop our injected pill; re-add it.
-  function ensurePill(article) {
-    if (config.showLabels === false) return;
-    if (!article.dataset.ceLabel || article.dataset.cePillFallback) return;
-    if (!article.querySelector(".ce-pill")) insertPill(article);
-  }
-
-  function clearLabel(article) {
-    delete article.dataset.ceLabel;
-    delete article.dataset.ceKind;
-    delete article.dataset.cePillFallback;
-    const pill = article.querySelector(".ce-pill");
-    if (pill) pill.remove();
-  }
-
-  function veil(article) {
-    article.classList.add("ce-veiled");
-  }
-
-  function unveil(article) {
-    article.classList.remove("ce-veiled");
-  }
-
-  function markKept(article) {
-    unveil(article);
-    article.classList.remove("ce-hidden");
-    removeBar(article);
-  }
-
-  function hideTweet(article, id, category, label) {
-    unveil(article);
-    article.classList.add("ce-hidden");
-
-    const cell = article.closest(S.cell) || article.parentElement;
-    if (!cell) return;
-    // Always rebuild the bar: X recycles DOM nodes, and a leftover bar from a
-    // previous tweet would carry a stale label and a dead click handler.
-    const stale = cell.querySelector(":scope > .ce-bar");
-    if (stale) stale.remove();
-
-    const bar = document.createElement("div");
-    bar.className = "ce-bar";
-    const tag = document.createElement("span");
-    tag.className = "ce-bar-label";
-    tag.textContent = "Filtered · " + (label || category);
-    const btn = document.createElement("button");
-    btn.className = "ce-bar-show";
-    btn.textContent = "show anyway";
-    btn.addEventListener("click", () => {
-      article.classList.remove("ce-hidden");
-      article.dataset.ceRevealed = "1";
-      bar.remove();
-    });
-    bar.append(tag, btn);
-    cell.prepend(bar);
-  }
-
-  function removeBar(article) {
-    const cell = article.closest(S.cell) || article.parentElement;
-    if (!cell) return;
-    const bar = cell.querySelector(":scope > .ce-bar");
-    if (bar) bar.remove();
-  }
-
-  function resetArticle(article) {
-    delete article.dataset.ceId;
-    delete article.dataset.ceRevealed;
-    delete article.dataset.ceAdChecked;
-    clearLabel(article);
-    article.classList.remove("ce-veiled", "ce-hidden");
-    removeBar(article);
-  }
-
-  function revealEverything() {
-    for (const article of document.querySelectorAll(S.tweet)) {
-      article.classList.remove("ce-veiled", "ce-hidden");
-      clearLabel(article);
-      removeBar(article);
+    const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 2;
+    if (!atBottom) {
+      list.scrollTop += dy;
+      return;
     }
-    for (const bar of document.querySelectorAll(".ce-bar")) bar.remove();
+    pumpBudget = Math.min(pumpBudget + dy * WHEEL_GAIN, innerHeight * 8);
+    if (!pumpTimer) {
+      stallSince = 0;
+      pumpTimer = setInterval(pumpTick, PUMP_TICK_MS);
+      ui.root.classList.add("ce-pumping");
+    }
+  }
+
+  function pumpTick() {
+    if (!ui || pumpBudget <= 0) return stopPump();
+    const doc = document.documentElement;
+    const atDocBottom = window.scrollY + innerHeight >= doc.scrollHeight - 4;
+    if (atDocBottom) {
+      // X is (hopefully) fetching the next page. Wait for the document to grow.
+      if (!stallSince) stallSince = Date.now();
+      else if (Date.now() - stallSince > PUMP_STALL_MS) return stopPump();
+      return;
+    }
+    stallSince = 0;
+    const step = Math.min(pumpBudget, innerHeight * 0.7);
+    window.scrollBy(0, step);
+    pumpBudget -= step;
+  }
+
+  function stopPump() {
+    clearInterval(pumpTimer);
+    pumpTimer = null;
+    pumpBudget = 0;
+    if (ui) ui.root.classList.remove("ce-pumping");
+  }
+
+  // -------------------------------------------------------------------------
+  // Rendering
+
+  function render() {
+    if (!ui) return;
+    renderStats();
+    renderNotice();
+    renderClusters();
+  }
+
+  function renderStats() {
+    if (!ui) return;
+    let assigned = 0;
+    for (const v of seen.values()) if (typeof v === "object") assigned++;
+    const parts = [`${assigned} posts`, `${clusters.length} clusters`];
+    if (inFlight > 0) parts.push(`${inFlight} classifying…`);
+    const sk = [];
+    if (skipped.ads) sk.push(`${skipped.ads} ads`);
+    if (skipped.noText) sk.push(`${skipped.noText} media-only`);
+    if (skipped.failed) sk.push(`${skipped.failed} failed`);
+    if (sk.length) parts.push("skipped " + sk.join(", "));
+    ui.stats.textContent = parts.join(" · ");
+  }
+
+  function renderNotice() {
+    const n = ui.notice;
+    n.innerHTML = "";
+    if (!config.apiKey) {
+      n.append(el("span", null, "Add your Anthropic API key to start clustering. "));
+      const b = el("button", "ce-link", "Open options");
+      b.addEventListener("click", () => sendMessageAsync({ type: "OPEN_OPTIONS" }));
+      n.append(b);
+      n.style.display = "";
+    } else if (clusters.length === 0 && inFlight === 0) {
+      n.textContent = "Waiting for posts… scroll to pull from your timeline.";
+      n.style.display = "";
+    } else {
+      n.style.display = "none";
+    }
+  }
+
+  function renderClusters() {
+    const list = ui.list;
+    const cards = ui.cards;
+    const sorted = clusters.slice().sort((a, b) => b.count - a.count || a.createdAt - b.createdAt);
+
+    // FLIP: remember where each card was so reorders animate.
+    const before = new Map();
+    for (const [id, card] of cards) before.set(id, card.getBoundingClientRect().top);
+
+    const live = new Set();
+    for (const c of sorted) {
+      live.add(c.id);
+      let card = cards.get(c.id);
+      if (!card) {
+        card = buildCard(c);
+        cards.set(c.id, card);
+        card.classList.add("ce-new");
+      } else {
+        updateCard(card, c);
+      }
+      list.appendChild(card); // appending in sorted order reorders in place
+    }
+    for (const [id, card] of cards) {
+      if (!live.has(id)) {
+        card.remove();
+        cards.delete(id);
+      }
+    }
+
+    for (const [id, card] of cards) {
+      const prev = before.get(id);
+      if (prev == null) continue;
+      const delta = prev - card.getBoundingClientRect().top;
+      if (!delta) continue;
+      card.style.transition = "none";
+      card.style.transform = `translateY(${delta}px)`;
+      requestAnimationFrame(() => {
+        card.style.transition = "";
+        card.style.transform = "";
+      });
+    }
+  }
+
+  function buildCard(c) {
+    const card = el("article", "ce-card");
+    card.dataset.id = c.id;
+    const count = el("div", "ce-count");
+    const body = el("div", "ce-body");
+    const title = el("h2", "ce-title");
+    const summary = el("p", "ce-summary");
+    const cats = el("div", "ce-cats");
+    const tag = el("span", "ce-noise-tag", "mostly noise");
+    body.append(title, summary, cats);
+    card.append(count, body, tag);
+    updateCard(card, c, true);
+    return card;
+  }
+
+  function updateCard(card, c, initial) {
+    const countEl = card.querySelector(".ce-count");
+    const prev = Number(countEl.textContent) || 0;
+    if (!initial && c.count !== prev) {
+      countEl.dataset.delta = c.count > prev ? "+" + (c.count - prev) : "";
+      card.classList.remove("ce-bump");
+      void card.offsetWidth; // restart animation
+      card.classList.add("ce-bump");
+    }
+    countEl.textContent = String(c.count);
+    card.querySelector(".ce-title").textContent = c.title;
+    card.querySelector(".ce-summary").textContent = c.summary;
+
+    const cats = card.querySelector(".ce-cats");
+    cats.innerHTML = "";
+    let hidden = 0;
+    const entries = Object.entries(c.categories || {}).sort((a, b) => b[1] - a[1]);
+    for (const [id, n] of entries) {
+      const info = categoryInfo[id] || { label: id, action: "keep" };
+      if (info.action === "hide") hidden += n;
+      const chip = el("span", "ce-cat", `${info.label} ${n}`);
+      chip.dataset.action = info.action;
+      cats.append(chip);
+    }
+    card.dataset.noise = c.count > 0 && hidden / c.count > 0.5 ? "1" : "";
   }
 
   // -------------------------------------------------------------------------
@@ -401,8 +557,7 @@
   // but our tweet selector never matched, X probably changed their markup.
 
   function healthCheck() {
-    const onTimeline = location.pathname === "/home";
-    if (!onTimeline) return;
+    if (location.pathname !== "/home") return;
     const column = document.querySelector('[data-testid="primaryColumn"], main');
     const pageHasContent = column && column.querySelectorAll("div").length > 50;
     const ok = everSawTweet || !pageHasContent;
@@ -475,7 +630,7 @@
         await sendMessageAsync({ type: "SAVE_SELECTORS", selectors: resp.selectors });
         S = Object.assign({}, S, resp.selectors);
         everSawTweet = true;
-        statusEl.textContent = "Repaired and verified (" + result.summary + "). Filtering resumed.";
+        statusEl.textContent = "Repaired and verified (" + result.summary + "). Clustering resumed.";
         sweep();
         setTimeout(() => {
           const box = document.querySelector(".ce-repair");
@@ -487,20 +642,7 @@
       statusEl.textContent = `Proposed selectors failed verification (${result.summary}); retrying…`;
     }
     statusEl.textContent =
-      "Couldn't find working selectors after " + REPAIR_MAX_ATTEMPTS + " attempts. Filtering stays off (feed shows unfiltered).";
-  }
-
-  function sendMessageAsync(msg) {
-    return new Promise((resolve) => {
-      try {
-        chrome.runtime.sendMessage(msg, (resp) => {
-          if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
-          else resolve(resp);
-        });
-      } catch (e) {
-        resolve({ error: String(e) });
-      }
-    });
+      "Couldn't find working selectors after " + REPAIR_MAX_ATTEMPTS + " attempts. Nothing can be clustered until this is fixed.";
   }
 
   // Serialize the timeline's DOM, pruned to what selector-derivation needs:
@@ -512,7 +654,7 @@
       document.querySelector("main") ||
       document.body;
     const clone = root.cloneNode(true);
-    for (const el of clone.querySelectorAll("svg, script, style, link, noscript, video")) el.remove();
+    for (const e of clone.querySelectorAll("svg, script, style, link, noscript, video, #ce-root")) e.remove();
     const walker = document.createTreeWalker(clone, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
     let node;
     while ((node = walker.nextNode())) {
@@ -546,8 +688,8 @@
     let text = 0, id = 0, caret = 0, cell = 0;
     for (const t of sample) {
       try {
-        const el = t.querySelector(c.tweetText);
-        if (el && el.innerText.trim()) text++;
+        const e = t.querySelector(c.tweetText);
+        if (e && e.innerText.trim()) text++;
       } catch (_) {}
       try {
         const l = t.querySelector(c.statusLink);
@@ -562,8 +704,6 @@
     }
     const n = sample.length;
     const summary = `tweets:${tweets.length}, text:${text}/${n}, statusId:${id}/${n}, caret:${caret}/${n}, cell:${cell}/${n}`;
-    // ids are essential (cache keys); text on most (media tweets have none);
-    // caret/cell degrade gracefully, so they inform but don't gate.
     const pass = id >= n * 0.8 && text >= n * 0.5;
     return { pass, summary };
   }

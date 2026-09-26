@@ -1,5 +1,9 @@
 // Shared config defaults + helpers. Loaded by options/popup pages via <script>,
 // and by background.js via importScripts(). Content scripts get config over messaging.
+//
+// Categories are the per-post quality taxonomy. Every post still gets exactly
+// one; cluster cards show the breakdown, and clusters that are mostly "hide"
+// categories are dimmed as noise.
 
 const CE_DEFAULT_CATEGORIES = [
   {
@@ -60,10 +64,8 @@ const CE_DEFAULT_CONFIG = {
   enabled: true,
   apiKey: "",
   model: "claude-haiku-4-5",
-  homeOnly: true, // only filter the Home timeline (/home); profiles, search, threads untouched
-  noTextAction: "hide", // media-only tweets (no text): "hide" or "keep" — nothing to classify either way
-  showLabels: true, // show the category pill on kept tweets
-  hideAds: true, // hide promoted tweets (detected locally, no API call)
+  homeOnly: true, // only take over the Home timeline (/home); other pages show X as-is
+  hideAds: true, // skip promoted tweets (detected locally, never sent to the API)
   repairModel: "claude-opus-5", // latest Opus alias; used only for selector self-repair
   selectors: CE_DEFAULT_SELECTORS,
   categories: CE_DEFAULT_CATEGORIES
